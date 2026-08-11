@@ -59,9 +59,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ orderId:
   const isApproved = order.status === "approved";
   const isDraft = order.status === "draft";
 
-  const handleApprove = (feedback?: { rating: number; note: string }) => {
-    updateOrderStatus(order.id, "approved", feedback?.note);
-    addComment(
+  // These are awaited in sequence: each is a separate write, and the final
+  // refresh() must reflect all of them.
+  const handleApprove = async (feedback?: { rating: number; note: string }) => {
+    await updateOrderStatus(order.id, "approved", feedback?.note);
+    await addComment(
       order.id,
       `Order approved by client. Final deliverable ready for publishing.${
         feedback?.note ? ` Client Note: "${feedback.note}"` : ""
@@ -71,22 +73,22 @@ export default function OrderDetailPage({ params }: { params: Promise<{ orderId:
     setShowSuccessBanner(true);
   };
 
-  const handleRevisionSubmit = (data: { category: string; notes: string }) => {
-    updateOrderStatus(order.id, "revision_requested", data.notes);
-    addComment(
+  const handleRevisionSubmit = async (data: { category: string; notes: string }) => {
+    await updateOrderStatus(order.id, "revision_requested", data.notes);
+    await addComment(
       order.id,
       `[Revision Request - ${data.category.toUpperCase()}]: ${data.notes}`,
       "client"
     );
-    addComment(
+    await addComment(
       order.id,
       "Status changed to Revision In Progress. Writer notified.",
       "system"
     );
   };
 
-  const handleAddUserComment = (body: string) => {
-    addComment(order.id, body, "client");
+  const handleAddUserComment = async (body: string) => {
+    await addComment(order.id, body, "client");
   };
 
   // Bundles the approved copy plus its brief into one downloadable handoff file.
@@ -96,7 +98,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ orderId:
     const assetBundle = [
       `# ${order.title}`,
       "",
-      `- Order: ${order.id.toUpperCase()}`,
+      `- Order: ${order.reference ?? order.id}`,
       `- Format: ${typeConfig.label}`,
       `- Word count: ${latestDeliverable.word_count.toLocaleString()}`,
       `- Primary keyword: ${order.primary_keyword || "—"}`,
@@ -148,7 +150,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ orderId:
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-xs text-neutral-400 font-bold uppercase">
-                {order.id}
+                {order.reference ?? order.id}
               </span>
               <span className="text-neutral-300">•</span>
               <span className="text-xs font-semibold text-neutral-700 bg-neutral-100 px-2.5 py-0.5 rounded-md">

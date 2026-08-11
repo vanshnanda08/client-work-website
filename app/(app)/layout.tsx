@@ -4,6 +4,7 @@ import React from "react";
 import { Sidebar } from "@/components/app-shell/Sidebar";
 import { TopNav } from "@/components/app-shell/TopNav";
 import { ThemeController } from "@/components/app-shell/ThemeController";
+import { WorkspaceGate } from "@/components/app-shell/WorkspaceGate";
 import { StoreProvider } from "@/lib/context/StoreContext";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -20,8 +21,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <TopNav />
 
           {/* Page Content Viewport */}
-          <main className="flex-1 px-4 sm:px-8 py-6 sm:py-8 max-w-7xl w-full mx-auto">
-            {children}
+          <main className="flex-1 px-4 sm:px-8 py-6 sm:py-8 max-w-7xl w-full mx-auto flex flex-col">
+            <WorkspaceGate>{children}</WorkspaceGate>
           </main>
         </div>
       </div>

@@ -21,12 +21,20 @@ There is no writer-side or agency-side UI, and there is no admin. Anything a
 writer or editor "does" is pre-baked into fixtures. Keep new features on the
 client side of that line.
 
-## Status: front-end only, no backend
+## Status: Supabase-backed
 
-**Every byte of state lives in React context + `localStorage`.** There is no API,
-no database, no auth. `lib/fixtures/*` are the seed values; on first client mount
-`localStorage` is layered over them. This is the single most important fact about
-the codebase — most "why is it like this?" questions resolve to it.
+**Postgres via Supabase is the source of truth.** Auth is real (email+password),
+every table is protected by row-level security, and the dashboard reads and
+writes live data.
+
+The single exception: **appearance (theme + density) still lives in
+`localStorage`**, deliberately. It is a per-device preference, and the pre-paint
+script in `app/layout.tsx` reads it synchronously to avoid a flash of the wrong
+theme — a database round trip cannot happen before first paint.
+
+`lib/fixtures/*` are no longer read at runtime by the app. They survive as the
+source for the SQL seed in `supabase/migrations/0002` and `0003`. Deleting them
+will not break the app, but you would lose the seed reference.
 
 ## Stack
 
@@ -38,9 +46,20 @@ the codebase — most "why is it like this?" questions resolve to it.
 | Tailwind | **v4** (`@tailwindcss/postcss`) | No `tailwind.config.js`. Theme is CSS variables in `app/globals.css`. |
 | Icons | `lucide-react` | |
 | Class merging | `clsx` + `tailwind-merge` via `cn()` in `lib/utils.ts` | |
+| Backend | **Supabase** (`@supabase/ssr` + `@supabase/supabase-js`) | Postgres + auth + RLS. Use `@supabase/ssr`, **not** the deprecated `auth-helpers-nextjs` that most blog posts still show. |
 
-No state library, no data-fetching library, no test framework — all deliberate
-given there is no server.
+No state library and no data-fetching library: the store in
+`lib/context/StoreContext.tsx` is the single data owner. No test framework
+either — see Commands.
+
+### Two Next 16 traps that break every Supabase guide online
+
+1. **`middleware.ts` is deprecated and renamed to `proxy.ts`** (export `proxy`,
+   not `middleware`). Following a Supabase tutorial verbatim gives you a file
+   Next silently ignores — sessions never refresh and users get logged out at
+   apparently random moments. Ours is `proxy.ts` at the repo root.
+2. **`cookies()` is async** — `const store = await cookies()`. Older
+   `@supabase/ssr` snippets call it synchronously and will not compile.
 
 ## Commands
 
@@ -88,13 +107,41 @@ components/
   dashboard/    RecentActivityFeed (+ 3 unused, see "Dead code")
   ui/           Button, Input, Textarea, Modal (+ 3 unused, see "Dead code")
 
+  (auth)/                 Route group for signed-out visitors (own minimal layout,
+                          no StoreProvider): login · signup · reset-password
+  auth/callback/route.ts  Exchanges an emailed code for a session cookie
+
 lib/
   context/StoreContext.tsx   THE store. All app state and every mutation.
+  supabase/client.ts         Browser client (Client Components)
+  supabase/server.ts         Server client — awaits cookies()
+  supabase/queries.ts        Row <-> domain-type mappers + loadWorkspace()
   types.ts                   All domain types. One source of truth.
   config.ts                  STATUS_CONFIG, CONTENT_TYPES, PRIORITY_CONFIG, APP_CONFIG
   utils.ts                   cn, date/number formatting, download helpers
-  fixtures/                  Seed data (MOCK_*)
+  fixtures/                  Legacy seed reference; not read at runtime
+
+proxy.ts                  Session refresh + route guard (NOT middleware.ts)
+supabase/migrations/      0001 schema+RLS · 0002 onboarding+writers · 0003 demo seed
+.env.local                NEXT_PUBLIC_SUPABASE_URL / _ANON_KEY (gitignored)
 ```
+
+## Database
+
+Schema, enums, RLS policies and functions live in `supabase/migrations/`. Apply
+them by pasting into the Supabase SQL Editor. **Never create tables by hand in
+the dashboard UI** — the schema must stay diffable in the repo.
+
+Tenancy: every business table is gated on org membership through `SECURITY
+DEFINER` helpers — `is_org_member`, `is_org_admin`, `can_access_order`,
+`shares_org_with`. They exist because a policy on `memberships` that itself
+queries `memberships` recurses infinitely. Each sets `search_path = public` to
+block search-path hijacking. **All 12 tables have RLS enabled; keep it that way.**
+
+Signup path: `handle_new_user()` (trigger on `auth.users`) creates the profile
+and notification prefs → the signup page calls `bootstrap_organization()` to
+create the org and owner membership. Without the second step a user belongs to
+no org and every policy denies them, so the dashboard is silently empty.
 
 ## The store — read this before touching state
 
@@ -114,42 +161,34 @@ outside the provider. It exposes 11 data slices and 18 actions:
 
 ### Rules that are load-bearing, not style
 
-**1. Every mutation must use a functional updater.**
+**1. Every action is `async` and ends with `refresh()`.** Writes go to Postgres,
+then the whole workspace is re-read. This is deliberately simple — no optimistic
+cache to desynchronise. It costs a round trip per mutation; if that becomes a
+problem, optimise a specific action, don't reintroduce a parallel cache.
 
-```ts
-setOrders(prev => prev.map(...))   // correct
-setOrders(orders.map(...))         // WRONG — reintroduces a fixed bug
-```
+**2. `await` at the call site whenever the result or ordering matters.** TypeScript
+will *not* catch this: a template literal happily interpolates a Promise, so
+`router.push(\`/orders/${createOrder(...)}\`)` silently navigates to
+`/orders/[object Promise]`. Real bug, already fixed once. Navigating before a
+write resolves also races the refresh.
 
-This is not a preference. Approving an order calls `updateOrderStatus` *then*
-`addComment`; both write `orders`. When they read `orders` from the render
-closure, the second overwrites the first and **the approval silently vanishes**
-from both state and `localStorage`. That was a real shipped bug. Same class broke
-revision requests, which write two comments in a row.
+**3. Never call one setter inside another setter's updater.** React StrictMode
+double-invokes updaters, so a nested `setX` fires twice. Read current state via a
+ref (see `prefsRef`) or add it to the `useCallback` deps.
 
-**2. Never call one setter inside another setter's updater.** React StrictMode
-double-invokes updaters, so a nested `setX` fires twice — duplicate
-notifications, double-refunded credits. To read current state inside a stable
-callback, use a ref (see `notificationPrefsRef`) or add the value to the
-`useCallback` deps.
+**4. Never trust the client with word credits.** `word_credits_remaining` is
+pinned by a database trigger; spending goes through the `submit_order()` RPC,
+which checks membership and balance and debits atomically. A client-side
+decrement is trivially cheatable from the browser console. Verified: a direct
+`PATCH` returns `400 word credits cannot be modified directly`.
 
-**3. Persistence is automatic.** One `useEffect` writes all slices to
-`localStorage` whenever any change. **Do not add manual `localStorage.setItem`
-calls inside actions** — an earlier version did that and the hand-written copies
-drifted from state. Because every action uses functional updates, the sync effect
-always sees final state.
+**5. The initial load effect** carries a narrow
+`react-hooks/set-state-in-effect` suppression — it is a one-shot pull from an
+external system that cannot run during render. Don't widen it.
 
-**4. Use `uid(prefix)` for new record ids**, never bare `Date.now()`. Two records
-created in the same millisecond (revision requests do exactly this) would collide
-and produce duplicate React keys.
-
-**5. Hydration.** State initialises from fixtures so SSR and first client render
-match; `localStorage` is layered on in an effect that flips `isHydrated`. The
-`react-hooks/set-state-in-effect` rule is disabled **for that one effect only**,
-with a comment explaining why. Don't widen that suppression.
-
-**localStorage keys** are `inkwell_*_v2` (see `STORAGE_KEYS`). Changing a key
-orphans existing user data. Bump to `_v3` deliberately if a shape change requires it.
+**Only one localStorage key remains**: `inkwell_appearance_v2`. Everything else
+is in Postgres. If you change that key or its shape, **update the inline
+pre-paint script in `app/layout.tsx` too** — it parses the value by hand.
 
 ## Conventions
 
@@ -246,18 +285,20 @@ drawer.
 
 | Area | Reality |
 |---|---|
-| Persistence | `localStorage` only — per browser, per device. Clearing site data resets to fixtures. |
-| Auth | None. "Sign Out" clears storage and reseeds; `/` just redirects to `/dashboard`. |
+| Persistence | **Real** — Postgres via Supabase, protected by RLS. |
+| Auth | **Real** — email+password. `proxy.ts` guards every app route. |
 | Downloads | Generated client-side from `body_md` as real `.md` files. **Not `.docx`** — that would need a zip dependency. |
-| Email notifications | Preferences are stored but nothing is ever sent. The *in-app* toggles genuinely gate the bell. |
+| Email notifications | Preferences persist, but nothing is ever sent. The *in-app* toggles genuinely gate the bell. |
 | Plan changes | `mailto:` links to `APP_CONFIG.supportEmail`. No billing. |
-| Writer activity | Deliverables, writer comments, and pipeline history are fixture data. Nothing advances an order past `submitted` on its own. |
-| Order ids | `ord-####`, derived from the highest existing number. |
+| Writer activity | **Still mocked.** No writer or agency UI exists, so nothing advances an order past `submitted`. `seed_demo_data()` fabricates the later statuses. An `/admin` page is the planned fix. |
+| Deliverables | Clients have `select` only — no insert policy. `/admin` will need one, gated on a platform-admin check. Do not widen the client policy. |
 
-Seed data: 9 orders spanning every status (1 draft, 1 approved, 2 delivered, …),
-4 writers, 6 activity events, 4 notifications, 3 team members, 2 pending invites.
-The spread is intentional — it exercises every status branch. Keep at least one
-order in each status if you edit `lib/fixtures/orders.ts`.
+**Order ids**: the primary key is a uuid (used in routes and lookups); the
+human-facing `ORD-####` lives in `orders.reference`, generated by a trigger.
+**Always display `reference`, never `id`.**
+
+**Seeding**: `seed_demo_data()` (migration 0003) fills the caller's org with 8
+orders spanning every status. It refuses to run if the org already has orders.
 
 ## Dead code (unused, intentionally left)
 

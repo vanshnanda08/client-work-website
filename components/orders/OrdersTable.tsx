@@ -85,7 +85,7 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({ orders }) => {
                         <div className="flex items-center gap-2 mt-1 text-[11px] text-neutral-500">
                           <span className="font-medium text-neutral-700">{typeConfig.label}</span>
                           <span>•</span>
-                          <span className="text-neutral-400 font-mono uppercase">{order.id}</span>
+                          <span className="text-neutral-400 font-mono uppercase">{order.reference ?? order.id}</span>
                           {order.priority !== "standard" && (
                             <>
                               <span>•</span>
@@ -194,7 +194,7 @@ export const OrdersTable: React.FC<OrdersTableProps> = ({ orders }) => {
             <div key={order.id} className="p-4 space-y-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="text-[11px] font-semibold text-neutral-500">
-                  {typeConfig.label} • <span className="font-mono uppercase">{order.id}</span>
+                  {typeConfig.label} • <span className="font-mono uppercase">{order.reference ?? order.id}</span>
                 </div>
                 <OrderStatusBadge status={order.status} size="sm" />
               </div>

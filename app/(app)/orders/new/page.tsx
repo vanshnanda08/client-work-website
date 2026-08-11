@@ -85,64 +85,69 @@ export default function NewOrderPage() {
     setReferenceUrls(referenceUrls.filter((_, i) => i !== index));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [submitError, setSubmitError] = useState("");
+
+  const collectFields = () => ({
+    title: title.trim(),
+    content_type: contentType,
+    word_count_target: wordCount,
+    primary_keyword: primaryKeyword.trim(),
+    secondary_keywords: secondaryKeywords,
+    tone,
+    target_audience: targetAudience,
+    reference_urls: referenceUrls.filter((u) => u.trim().length > 0),
+    due_date: dueDate,
+    priority,
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSubmitError("");
+
     if (!title.trim()) {
-      alert("Please provide an order title.");
+      setSubmitError("Please provide an order title.");
       return;
     }
     if (!brief.trim()) {
-      alert("Please provide a content brief.");
+      setSubmitError("Please provide a content brief.");
       return;
     }
 
     setIsSubmitting(true);
-    setTimeout(() => {
-      const newOrderId = createOrder({
-        title: title.trim(),
-        content_type: contentType,
-        word_count_target: wordCount,
-        primary_keyword: primaryKeyword.trim(),
-        secondary_keywords: secondaryKeywords,
+    try {
+      // Must await: createOrder writes to Supabase and returns the new row id.
+      const newOrderId = await createOrder({
+        ...collectFields(),
         brief: brief.trim(),
-        tone,
-        target_audience: targetAudience,
-        reference_urls: referenceUrls.filter((u) => u.trim().length > 0),
-        due_date: dueDate,
-        priority,
         status: "submitted",
       });
-
-      setIsSubmitting(false);
       router.push(`/orders/${newOrderId}`);
-    }, 500);
+    } catch (err) {
+      // Most likely cause: not enough word credits (submit_order() raises).
+      setSubmitError(err instanceof Error ? err.message : String(err));
+      setIsSubmitting(false);
+    }
   };
 
-  const handleSaveDraft = () => {
+  const handleSaveDraft = async () => {
+    setSubmitError("");
     if (!title.trim()) {
-      alert("Please enter a title to save a draft.");
+      setSubmitError("Please enter a title to save a draft.");
       return;
     }
+
     setIsSavingDraft(true);
-    setTimeout(() => {
-      createOrder({
-        title: title.trim(),
-        content_type: contentType,
-        word_count_target: wordCount,
-        primary_keyword: primaryKeyword.trim(),
-        secondary_keywords: secondaryKeywords,
+    try {
+      await createOrder({
+        ...collectFields(),
         brief: brief.trim() || "Draft brief in progress...",
-        tone,
-        target_audience: targetAudience,
-        reference_urls: referenceUrls.filter((u) => u.trim().length > 0),
-        due_date: dueDate,
-        priority,
         status: "draft",
       });
-
-      setIsSavingDraft(false);
       router.push("/orders?status=draft");
-    }, 400);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+      setIsSavingDraft(false);
+    }
   };
 
   return (
@@ -156,6 +161,15 @@ export default function NewOrderPage() {
           Specify your brief, target audience, and writing parameters to launch production.
         </p>
       </div>
+
+      {submitError && (
+        <div
+          role="alert"
+          className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs font-medium text-rose-800"
+        >
+          {submitError}
+        </div>
+      )}
 
       <form onSubmit={handleSubmit}>
         {/* Main 2-Column Layout Matching the Screenshot */}

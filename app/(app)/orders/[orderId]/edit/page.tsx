@@ -107,7 +107,7 @@ function EditDraftForm({ order }: { order: Order }) {
     setReferenceUrls(next);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) {
       setError("Please provide an order title.");
@@ -120,27 +120,42 @@ function EditDraftForm({ order }: { order: Order }) {
     setError("");
     setIsSubmitting(true);
 
-    // Persist the edits first, then move the draft into production.
-    updateOrder(order.id, collectFields());
-    submitDraft(order.id);
-    router.push(`/orders/${order.id}`);
+    try {
+      // Both awaited: the save must land before submit_order() reads the row,
+      // and navigating early would race the writes.
+      await updateOrder(order.id, collectFields());
+      await submitDraft(order.id);
+      router.push(`/orders/${order.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setIsSubmitting(false);
+    }
   };
 
-  const handleSaveDraft = () => {
+  const handleSaveDraft = async () => {
     if (!title.trim()) {
       setError("Please provide an order title.");
       return;
     }
     setError("");
     setIsSaving(true);
-    updateOrder(order.id, collectFields());
-    router.push("/orders");
+    try {
+      await updateOrder(order.id, collectFields());
+      router.push("/orders");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setIsSaving(false);
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!confirm(`Delete draft "${order.title}"? This cannot be undone.`)) return;
-    deleteOrder(order.id);
-    router.push("/orders");
+    try {
+      await deleteOrder(order.id);
+      router.push("/orders");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   return (
@@ -154,7 +169,7 @@ function EditDraftForm({ order }: { order: Order }) {
           Back to all orders
         </Link>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-neutral-900 tracking-tight mt-2">
-          {isDraft ? "Edit Draft" : "Edit Order"}: {order.id.toUpperCase()}
+          {isDraft ? "Edit Draft" : "Edit Order"}: {order.reference ?? order.id}
         </h1>
         <p className="text-xs sm:text-sm text-neutral-500 mt-1">
           {isDraft

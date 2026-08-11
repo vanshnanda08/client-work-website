@@ -25,19 +25,9 @@ import {
   NotificationPreferences,
   AppearancePreferences,
 } from "@/lib/types";
-import { MOCK_ORDERS } from "@/lib/fixtures/orders";
-import {
-  MOCK_ORGANIZATION,
-  MOCK_CURRENT_USER,
-  MOCK_MEMBERSHIPS,
-  MOCK_INVITATIONS,
-  MOCK_BRAND_VOICE,
-  MOCK_NOTIFICATION_PREFERENCES,
-  MOCK_APPEARANCE,
-} from "@/lib/fixtures/organization";
-import { MOCK_ACTIVITIES, MOCK_NOTIFICATIONS } from "@/lib/fixtures/activities";
-import { MOCK_COMMENTS } from "@/lib/fixtures/comments";
-import { MOCK_WRITERS } from "@/lib/fixtures/writers";
+import { MOCK_APPEARANCE } from "@/lib/fixtures/organization";
+import { createClient } from "@/lib/supabase/client";
+import { loadWorkspace } from "@/lib/supabase/queries";
 
 export interface NewOrderInput {
   title: string;
@@ -66,585 +56,564 @@ interface StoreContextType {
   brandVoice: BrandVoice;
   notificationPrefs: NotificationPreferences;
   appearance: AppearancePreferences;
-  /**
-   * False until localStorage has been layered over the seed fixtures. Forms
-   * that copy store values into local draft state key off this so they remount
-   * with the persisted values once they arrive.
-   */
+  /** False until the first Supabase load completes. */
   isHydrated: boolean;
+  /** Set when the signed-in user belongs to no organization. */
+  needsOnboarding: boolean;
+  /** Last write error, surfaced so pages can show it. */
+  error: string | null;
+  refresh: () => Promise<void>;
 
-  updateCurrentUser: (updates: Partial<Profile>) => void;
-  createOrder: (orderData: NewOrderInput) => string;
-  updateOrder: (orderId: string, updates: Partial<Order>) => void;
-  submitDraft: (orderId: string) => void;
-  deleteOrder: (orderId: string) => void;
-  updateOrderStatus: (orderId: string, status: OrderStatus, note?: string) => void;
-  addComment: (orderId: string, body: string, authorType?: "client" | "writer" | "system") => void;
-  markNotificationsAsRead: () => void;
-  markNotificationAsRead: (notificationId: string) => void;
-  updateOrganization: (updates: Partial<Organization>) => void;
-  updateBrandVoice: (updates: Partial<BrandVoice>) => void;
-  updateNotificationPrefs: (updates: Partial<NotificationPreferences>) => void;
+  updateCurrentUser: (updates: Partial<Profile>) => Promise<void>;
+  createOrder: (orderData: NewOrderInput) => Promise<string>;
+  updateOrder: (orderId: string, updates: Partial<Order>) => Promise<void>;
+  submitDraft: (orderId: string) => Promise<void>;
+  deleteOrder: (orderId: string) => Promise<void>;
+  updateOrderStatus: (orderId: string, status: OrderStatus, note?: string) => Promise<void>;
+  addComment: (
+    orderId: string,
+    body: string,
+    authorType?: "client" | "writer" | "system"
+  ) => Promise<void>;
+  markNotificationsAsRead: () => Promise<void>;
+  markNotificationAsRead: (notificationId: string) => Promise<void>;
+  updateOrganization: (updates: Partial<Organization>) => Promise<void>;
+  updateBrandVoice: (updates: Partial<BrandVoice>) => Promise<void>;
+  updateNotificationPrefs: (updates: Partial<NotificationPreferences>) => Promise<void>;
   updateAppearance: (updates: Partial<AppearancePreferences>) => void;
-  inviteMember: (email: string, role: MemberRole) => void;
-  revokeInvitation: (invitationId: string) => void;
-  updateMemberRole: (membershipId: string, role: MemberRole) => void;
-  removeMember: (membershipId: string) => void;
+  inviteMember: (email: string, role: MemberRole) => Promise<void>;
+  revokeInvitation: (invitationId: string) => Promise<void>;
+  updateMemberRole: (membershipId: string, role: MemberRole) => Promise<void>;
+  removeMember: (membershipId: string) => Promise<void>;
   signOut: () => void;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
 
-const STORAGE_KEYS = {
-  orders: "inkwell_orders_v2",
-  organization: "inkwell_org_v2",
-  notifications: "inkwell_notifs_v2",
-  activities: "inkwell_activities_v2",
-  comments: "inkwell_comments_v2",
-  user: "inkwell_user_v2",
-  memberships: "inkwell_memberships_v2",
-  invitations: "inkwell_invitations_v2",
-  brandVoice: "inkwell_brand_voice_v2",
-  notificationPrefs: "inkwell_notif_prefs_v2",
-  appearance: "inkwell_appearance_v2",
-} as const;
-
 /**
- * Monotonic id suffix so several records created inside the same millisecond
- * (e.g. the two comments written when a revision is requested) never collide.
+ * Appearance stays in localStorage rather than the database: it is a
+ * per-device preference, and the pre-paint script in app/layout.tsx reads it
+ * synchronously to avoid a flash of the wrong theme. A DB round trip cannot
+ * happen before first paint.
  */
-let idCounter = 0;
-const uid = (prefix: string) =>
-  `${prefix}-${Date.now().toString(36)}-${(idCounter++).toString(36)}`;
+const APPEARANCE_KEY = "inkwell_appearance_v2";
 
-const readStored = <T,>(key: string): T | undefined => {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : undefined;
-  } catch {
-    return undefined;
-  }
+/** Placeholder identity shown for the moment before the first load resolves. */
+const EMPTY_ORG: Organization = {
+  id: "",
+  name: "Loading…",
+  slug: "",
+  brand_voice: "",
+  style_guide_url: "",
+  plan: "—",
+  word_credits_total: 0,
+  word_credits_remaining: 0,
+  renewal_date: "",
+  created_at: new Date().toISOString(),
+};
+
+const EMPTY_USER: Profile = {
+  id: "",
+  full_name: "",
+  email: "",
+  created_at: new Date().toISOString(),
+};
+
+const EMPTY_BRAND_VOICE: BrandVoice = {
+  summary: "",
+  formality_level: 65,
+  technical_depth: 85,
+  forbidden_words: [],
+};
+
+const EMPTY_PREFS: NotificationPreferences = {
+  emailDeliverable: true,
+  emailRevision: true,
+  emailComment: true,
+  emailWeeklyDigest: false,
+  inAppStatus: true,
+  inAppComment: true,
+  inAppDeliverable: true,
 };
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [orders, setOrders] = useState<Order[]>(MOCK_ORDERS);
-  const [organization, setOrganization] = useState<Organization>(MOCK_ORGANIZATION);
-  const [activities, setActivities] = useState<ActivityEvent[]>(MOCK_ACTIVITIES);
-  const [notifications, setNotifications] = useState<Notification[]>(MOCK_NOTIFICATIONS);
-  const [commentsMap, setCommentsMap] = useState<Record<string, Comment[]>>(MOCK_COMMENTS);
-  const [currentUser, setCurrentUser] = useState<Profile>(MOCK_CURRENT_USER);
-  const [memberships, setMemberships] = useState<Membership[]>(MOCK_MEMBERSHIPS);
-  const [invitations, setInvitations] = useState<Invitation[]>(MOCK_INVITATIONS);
-  const [brandVoice, setBrandVoice] = useState<BrandVoice>(MOCK_BRAND_VOICE);
+  const supabase = createClient();
+
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [organization, setOrganization] = useState<Organization>(EMPTY_ORG);
+  const [activities, setActivities] = useState<ActivityEvent[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [commentsMap, setCommentsMap] = useState<Record<string, Comment[]>>({});
+  const [currentUser, setCurrentUser] = useState<Profile>(EMPTY_USER);
+  const [memberships, setMemberships] = useState<Membership[]>([]);
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [brandVoice, setBrandVoice] = useState<BrandVoice>(EMPTY_BRAND_VOICE);
   const [notificationPrefs, setNotificationPrefs] =
-    useState<NotificationPreferences>(MOCK_NOTIFICATION_PREFERENCES);
+    useState<NotificationPreferences>(EMPTY_PREFS);
   const [appearance, setAppearance] = useState<AppearancePreferences>(MOCK_APPEARANCE);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Hydrate from localStorage on initial client mount. State starts from the
-  // fixtures so server and client render identically; stored data is layered on
-  // afterwards to avoid a hydration mismatch.
-  //
-  // The rule below is disabled for this block only: reading the persisted
-  // workspace is a one-shot pull from an external system (localStorage) that
-  // cannot happen during render without breaking SSR hydration.
-  /* eslint-disable react-hooks/set-state-in-effect */
+  const userIdRef = useRef<string | null>(null);
+  const prefsRef = useRef(notificationPrefs);
   useEffect(() => {
-    const savedOrders = readStored<Order[]>(STORAGE_KEYS.orders);
-    if (Array.isArray(savedOrders) && savedOrders.length > 0) setOrders(savedOrders);
-
-    const savedOrg = readStored<Organization>(STORAGE_KEYS.organization);
-    if (savedOrg) setOrganization(savedOrg);
-
-    const savedNotifs = readStored<Notification[]>(STORAGE_KEYS.notifications);
-    if (savedNotifs) setNotifications(savedNotifs);
-
-    const savedActivities = readStored<ActivityEvent[]>(STORAGE_KEYS.activities);
-    if (savedActivities) setActivities(savedActivities);
-
-    const savedComments = readStored<Record<string, Comment[]>>(STORAGE_KEYS.comments);
-    if (savedComments) setCommentsMap(savedComments);
-
-    const savedUser = readStored<Profile>(STORAGE_KEYS.user);
-    if (savedUser) setCurrentUser(savedUser);
-
-    const savedMemberships = readStored<Membership[]>(STORAGE_KEYS.memberships);
-    if (savedMemberships) setMemberships(savedMemberships);
-
-    const savedInvitations = readStored<Invitation[]>(STORAGE_KEYS.invitations);
-    if (savedInvitations) setInvitations(savedInvitations);
-
-    const savedVoice = readStored<BrandVoice>(STORAGE_KEYS.brandVoice);
-    if (savedVoice) setBrandVoice(savedVoice);
-
-    const savedPrefs = readStored<NotificationPreferences>(STORAGE_KEYS.notificationPrefs);
-    if (savedPrefs) setNotificationPrefs(savedPrefs);
-
-    const savedAppearance = readStored<AppearancePreferences>(STORAGE_KEYS.appearance);
-    if (savedAppearance) setAppearance(savedAppearance);
-
-    setIsHydrated(true);
-  }, []);
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  // Single write-through sync. Every mutation below uses functional updates, so
-  // this effect always observes the final committed state.
-  useEffect(() => {
-    if (!isHydrated) return;
-    try {
-      localStorage.setItem(STORAGE_KEYS.orders, JSON.stringify(orders));
-      localStorage.setItem(STORAGE_KEYS.organization, JSON.stringify(organization));
-      localStorage.setItem(STORAGE_KEYS.notifications, JSON.stringify(notifications));
-      localStorage.setItem(STORAGE_KEYS.activities, JSON.stringify(activities));
-      localStorage.setItem(STORAGE_KEYS.comments, JSON.stringify(commentsMap));
-      localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(currentUser));
-      localStorage.setItem(STORAGE_KEYS.memberships, JSON.stringify(memberships));
-      localStorage.setItem(STORAGE_KEYS.invitations, JSON.stringify(invitations));
-      localStorage.setItem(STORAGE_KEYS.brandVoice, JSON.stringify(brandVoice));
-      localStorage.setItem(STORAGE_KEYS.notificationPrefs, JSON.stringify(notificationPrefs));
-      localStorage.setItem(STORAGE_KEYS.appearance, JSON.stringify(appearance));
-    } catch (e) {
-      console.warn("Failed to sync store to localStorage", e);
-    }
-  }, [
-    orders,
-    organization,
-    notifications,
-    activities,
-    commentsMap,
-    currentUser,
-    memberships,
-    invitations,
-    brandVoice,
-    notificationPrefs,
-    appearance,
-    isHydrated,
-  ]);
-
-  const pushActivity = useCallback((event: Omit<ActivityEvent, "id">) => {
-    setActivities((prev) => [{ ...event, id: uid("act") }, ...prev]);
-  }, []);
-
-  /**
-   * In-app notifications are gated on the user's notification preferences. The
-   * prefs are read through a ref so this callback stays stable and never has to
-   * mutate one piece of state from inside another's updater.
-   */
-  const notificationPrefsRef = useRef(notificationPrefs);
-  useEffect(() => {
-    notificationPrefsRef.current = notificationPrefs;
+    prefsRef.current = notificationPrefs;
   }, [notificationPrefs]);
 
-  const pushNotification = useCallback(
-    (notification: Omit<Notification, "id" | "user_id" | "read_at">) => {
-      const prefs = notificationPrefsRef.current;
-      const allowed =
-        notification.type === "deliverable"
-          ? prefs.inAppDeliverable
-          : notification.type === "comment"
-          ? prefs.inAppComment
-          : prefs.inAppStatus;
-      if (!allowed) return;
+  /** Pull the whole workspace and replace local state with it. */
+  const refresh = useCallback(async () => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-      setNotifications((prev) => [
-        { ...notification, id: uid("notif"), user_id: currentUser.id, read_at: null },
-        ...prev,
-      ]);
-    },
-    [currentUser.id]
-  );
+    if (!user) {
+      userIdRef.current = null;
+      setIsHydrated(true);
+      return;
+    }
+    userIdRef.current = user.id;
 
-  const createOrder = useCallback(
-    (data: NewOrderInput): string => {
-      const isDraft = data.status === "draft";
-      const now = new Date().toISOString();
-      const wordTarget = Number(data.word_count_target) || 1200;
+    const snap = await loadWorkspace(supabase, user.id);
 
-      // Derive the next human-readable order number from the highest existing one
-      // so ids stay unique even after deletions.
-      const highest = orders.reduce((max, o) => {
-        const n = parseInt(o.id.replace(/\D/g, ""), 10);
-        return Number.isFinite(n) && n > max ? n : max;
-      }, 1050);
-      const newId = `ord-${highest + 1}`;
+    setNeedsOnboarding(!snap.organization);
+    if (snap.organization) setOrganization(snap.organization);
+    if (snap.brandVoice) setBrandVoice(snap.brandVoice);
+    if (snap.currentUser) setCurrentUser(snap.currentUser);
+    if (snap.notificationPrefs) setNotificationPrefs(snap.notificationPrefs);
+    setOrders(snap.orders);
+    setCommentsMap(snap.commentsMap);
+    setActivities(snap.activities);
+    setNotifications(snap.notifications);
+    setMemberships(snap.memberships);
+    setInvitations(snap.invitations);
+    setIsHydrated(true);
+  }, [supabase]);
 
-      const assignedWriter = isDraft ? undefined : MOCK_WRITERS[0];
-
-      const newOrder: Order = {
-        id: newId,
-        org_id: organization.id,
-        created_by: currentUser.id,
-        title: data.title,
-        content_type: data.content_type,
-        word_count_target: wordTarget,
-        primary_keyword: data.primary_keyword || "",
-        secondary_keywords: data.secondary_keywords || [],
-        brief: data.brief,
-        tone: data.tone || "Authoritative, Clear & Engaging",
-        target_audience: data.target_audience || "B2B Tech Buyers",
-        reference_urls: data.reference_urls || [],
-        due_date: data.due_date,
-        priority: data.priority || "standard",
-        status: isDraft ? "draft" : "submitted",
-        assigned_writer_id: assignedWriter?.id,
-        assigned_writer: assignedWriter,
-        deliverables: [],
-        comments_count: isDraft ? 0 : 1,
-        outline_required: true,
-        plagiarism_check: true,
-        meta_description_required: true,
-        created_at: now,
-        updated_at: now,
-      };
-
-      setOrders((prev) => [newOrder, ...prev]);
-
-      if (!isDraft) {
-        setOrganization((prev) => ({
-          ...prev,
-          word_credits_remaining: Math.max(0, prev.word_credits_remaining - wordTarget),
-        }));
-
-        pushActivity({
-          org_id: organization.id,
-          order_id: newId,
-          order_title: data.title,
-          actor_type: "client",
-          actor_name: currentUser.full_name,
-          type: "order_created",
-          payload: { words: wordTarget },
-          created_at: now,
-        });
-
-        pushNotification({
-          event_id: newId,
-          title: "Order Submitted to Queue",
-          message: `Order '${data.title}' was submitted and assigned to ${assignedWriter?.full_name}.`,
-          order_id: newId,
-          created_at: now,
-          type: "status",
-        });
-
-        setCommentsMap((prev) => ({
-          ...prev,
-          [newId]: [
-            {
-              id: uid("c-sys"),
-              order_id: newId,
-              author_type: "system",
-              body: `Order submitted to production. Assigned to ${
-                assignedWriter?.full_name || "Agency Editorial Team"
-              }.`,
-              created_at: now,
-            },
-          ],
-        }));
+  // Initial load, plus reload whenever the auth state changes (sign in/out).
+  /* eslint-disable react-hooks/set-state-in-effect -- one-shot pull from an
+     external system (Supabase); cannot happen during render. */
+  useEffect(() => {
+    let active = true;
+    refresh().catch((e) => {
+      if (active) {
+        setError(e instanceof Error ? e.message : String(e));
+        setIsHydrated(true);
       }
+    });
 
-      return newId;
-    },
-    [orders, organization.id, currentUser, pushActivity, pushNotification]
-  );
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+        refresh().catch(() => {});
+      }
+    });
 
-  const updateOrder = useCallback((orderId: string, updates: Partial<Order>) => {
-    const now = new Date().toISOString();
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.id.toLowerCase() === orderId.toLowerCase()
-          ? { ...o, ...updates, updated_at: now }
-          : o
-      )
-    );
+    // Appearance is device-local; read it once on mount.
+    try {
+      const raw = localStorage.getItem(APPEARANCE_KEY);
+      if (raw) setAppearance(JSON.parse(raw));
+    } catch {
+      /* ignore malformed value */
+    }
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [refresh, supabase]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  /** Wrap a write so failures surface instead of vanishing. */
+  const guard = useCallback(async (fn: () => Promise<void>) => {
+    try {
+      setError(null);
+      await fn();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
   }, []);
 
-  /** Moves a saved draft into production: assigns a writer and spends credits. */
-  const submitDraft = useCallback(
-    (orderId: string) => {
-      const now = new Date().toISOString();
-      const draft = orders.find((o) => o.id.toLowerCase() === orderId.toLowerCase());
-      if (!draft || draft.status !== "draft") return;
+  /* ------------------------------------------------------------- orders */
 
-      const assignedWriter = MOCK_WRITERS[0];
+  const createOrder = useCallback(
+    async (data: NewOrderInput): Promise<string> => {
+      const isDraft = data.status === "draft";
 
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.id.toLowerCase() === orderId.toLowerCase()
-            ? {
-                ...o,
-                status: "submitted" as OrderStatus,
-                assigned_writer_id: assignedWriter.id,
-                assigned_writer: assignedWriter,
-                comments_count: (o.comments_count || 0) + 1,
-                updated_at: now,
-              }
-            : o
-        )
-      );
+      const { data: row, error: insertError } = await supabase
+        .from("orders")
+        .insert({
+          org_id: organization.id,
+          created_by: currentUser.id || null,
+          title: data.title,
+          content_type: data.content_type,
+          word_count_target: Number(data.word_count_target) || 1200,
+          primary_keyword: data.primary_keyword ?? "",
+          secondary_keywords: data.secondary_keywords ?? [],
+          brief: data.brief,
+          tone: data.tone ?? "Authoritative, Clear & Engaging",
+          target_audience: data.target_audience ?? "B2B Tech Buyers",
+          reference_urls: data.reference_urls ?? [],
+          due_date: data.due_date,
+          priority: data.priority ?? "standard",
+          status: "draft",
+        })
+        .select("*")
+        .single();
 
-      setOrganization((prev) => ({
-        ...prev,
-        word_credits_remaining: Math.max(
-          0,
-          prev.word_credits_remaining - draft.word_count_target
-        ),
-      }));
-
-      pushActivity({
-        org_id: organization.id,
-        order_id: draft.id,
-        order_title: draft.title,
-        actor_type: "client",
-        actor_name: currentUser.full_name,
-        type: "order_created",
-        payload: { words: draft.word_count_target },
-        created_at: now,
-      });
-
-      pushNotification({
-        event_id: draft.id,
-        title: "Draft Submitted to Queue",
-        message: `Order '${draft.title}' was submitted and assigned to ${assignedWriter.full_name}.`,
-        order_id: draft.id,
-        created_at: now,
-        type: "status",
-      });
-
-      setCommentsMap((prev) => ({
-        ...prev,
-        [draft.id]: [
-          ...(prev[draft.id] || []),
-          {
-            id: uid("c-sys"),
-            order_id: draft.id,
-            author_type: "system",
-            body: `Order submitted to production. Assigned to ${assignedWriter.full_name}.`,
-            created_at: now,
-          },
-        ],
-      }));
-    },
-    [orders, organization.id, currentUser.full_name, pushActivity, pushNotification]
-  );
-
-  /** Drafts can be discarded outright; submitted work refunds its word credits. */
-  const deleteOrder = useCallback(
-    (orderId: string) => {
-      const target = orders.find((o) => o.id.toLowerCase() === orderId.toLowerCase());
-      if (!target) return;
-
-      setOrders((prev) => prev.filter((o) => o.id.toLowerCase() !== orderId.toLowerCase()));
-
-      if (target.status !== "draft") {
-        setOrganization((org) => ({
-          ...org,
-          word_credits_remaining: Math.min(
-            org.word_credits_total,
-            org.word_credits_remaining + target.word_count_target
-          ),
-        }));
+      if (insertError) {
+        setError(insertError.message);
+        throw new Error(insertError.message);
       }
 
-      setCommentsMap((prev) => {
-        const next = { ...prev };
-        delete next[target.id];
-        return next;
-      });
+      const orderId = row.id as string;
 
-      setNotifications((prev) => prev.filter((n) => n.order_id !== target.id));
+      // Spending credits and assigning a writer happens server-side, so the
+      // balance cannot be tampered with from the browser.
+      if (!isDraft) {
+        const { error: rpcError } = await supabase.rpc("submit_order", {
+          p_order_id: orderId,
+        });
+        if (rpcError) {
+          setError(rpcError.message);
+          throw new Error(rpcError.message);
+        }
+      }
+
+      await refresh();
+      return orderId;
     },
-    [orders]
+    [supabase, organization.id, currentUser.id, refresh]
+  );
+
+  const updateOrder = useCallback(
+    async (orderId: string, updates: Partial<Order>) =>
+      guard(async () => {
+        // Strip relations and generated columns — they are not real columns.
+        const {
+          assigned_writer: _w,
+          deliverables: _d,
+          comments_count: _c,
+          reference: _r,
+          id: _i,
+          org_id: _o,
+          created_at: _ca,
+          ...columns
+        } = updates as Record<string, unknown> & Partial<Order>;
+
+        const { error: e } = await supabase
+          .from("orders")
+          .update(columns)
+          .eq("id", orderId);
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, refresh, guard]
+  );
+
+  const submitDraft = useCallback(
+    async (orderId: string) =>
+      guard(async () => {
+        const { error: e } = await supabase.rpc("submit_order", { p_order_id: orderId });
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, refresh, guard]
+  );
+
+  const deleteOrder = useCallback(
+    async (orderId: string) =>
+      guard(async () => {
+        const { error: e } = await supabase.from("orders").delete().eq("id", orderId);
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, refresh, guard]
   );
 
   const updateOrderStatus = useCallback(
-    (orderId: string, status: OrderStatus, note?: string) => {
-      const now = new Date().toISOString();
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.id.toLowerCase() === orderId.toLowerCase()
-            ? { ...o, status, updated_at: now }
-            : o
-        )
-      );
+    async (orderId: string, status: OrderStatus, note?: string) =>
+      guard(async () => {
+        const order = orders.find((o) => o.id === orderId);
 
-      const order = orders.find((o) => o.id.toLowerCase() === orderId.toLowerCase());
+        const { error: e } = await supabase
+          .from("orders")
+          .update({ status })
+          .eq("id", orderId);
+        if (e) throw new Error(e.message);
 
-      if (status === "approved") {
-        pushActivity({
-          org_id: organization.id,
-          order_id: orderId,
-          order_title: order?.title,
-          actor_type: "client",
-          actor_name: currentUser.full_name,
-          type: "order_approved",
-          payload: {},
-          created_at: now,
-        });
-        pushNotification({
-          event_id: orderId,
-          title: "Order Approved",
-          message: `You approved '${order?.title ?? orderId}'. Final assets are ready to download.`,
-          order_id: orderId,
-          created_at: now,
-          type: "status",
-        });
-      } else if (status === "revision_requested") {
-        pushActivity({
-          org_id: organization.id,
-          order_id: orderId,
-          order_title: order?.title,
-          actor_type: "client",
-          actor_name: currentUser.full_name,
-          type: "revision_requested",
-          payload: { note },
-          created_at: now,
-        });
-        pushNotification({
-          event_id: orderId,
-          title: "Revision Requested",
-          message: `Your revision notes for '${order?.title ?? orderId}' were sent to the writer.`,
-          order_id: orderId,
-          created_at: now,
-          type: "status",
-        });
-      }
-    },
-    [orders, organization.id, currentUser.full_name, pushActivity, pushNotification]
+        if (status === "approved" || status === "revision_requested") {
+          const type = status === "approved" ? "order_approved" : "revision_requested";
+
+          await supabase.from("activities").insert({
+            org_id: organization.id,
+            order_id: orderId,
+            actor_type: "client",
+            actor_id: currentUser.id || null,
+            actor_name: currentUser.full_name,
+            type,
+            payload: note ? { note } : {},
+          });
+
+          if (status === "revision_requested") {
+            await supabase.from("revisions").insert({
+              order_id: orderId,
+              requested_by: currentUser.id || null,
+              notes: note ?? "",
+            });
+          }
+
+          if (prefsRef.current.inAppStatus) {
+            await supabase.from("notifications").insert({
+              user_id: currentUser.id,
+              org_id: organization.id,
+              order_id: orderId,
+              title: status === "approved" ? "Order approved" : "Revision requested",
+              message:
+                status === "approved"
+                  ? `You approved '${order?.title ?? "an order"}'. Final assets are ready to download.`
+                  : `Your revision notes for '${order?.title ?? "an order"}' were sent to the writer.`,
+              type: "status",
+            });
+          }
+        }
+
+        await refresh();
+      }),
+    [supabase, orders, organization.id, currentUser, refresh, guard]
   );
 
   const addComment = useCallback(
-    (orderId: string, body: string, authorType: "client" | "writer" | "system" = "client") => {
-      const now = new Date().toISOString();
-      const newComment: Comment = {
-        id: uid("c"),
-        order_id: orderId,
-        author_type: authorType,
-        author_name: authorType === "client" ? currentUser.full_name : undefined,
-        author_avatar: authorType === "client" ? currentUser.avatar_url : undefined,
-        body,
-        created_at: now,
-      };
-
-      setCommentsMap((prev) => ({
-        ...prev,
-        [orderId]: [...(prev[orderId] || []), newComment],
-      }));
-
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.id.toLowerCase() === orderId.toLowerCase()
-            ? { ...o, comments_count: (o.comments_count || 0) + 1, updated_at: now }
-            : o
-        )
-      );
-    },
-    [currentUser.full_name, currentUser.avatar_url]
+    async (
+      orderId: string,
+      body: string,
+      authorType: "client" | "writer" | "system" = "client"
+    ) =>
+      guard(async () => {
+        const { error: e } = await supabase.from("comments").insert({
+          order_id: orderId,
+          author_type: authorType,
+          author_id: authorType === "client" ? currentUser.id || null : null,
+          body,
+        });
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, currentUser.id, refresh, guard]
   );
 
-  const markNotificationsAsRead = useCallback(() => {
-    const now = new Date().toISOString();
-    setNotifications((prev) => prev.map((n) => ({ ...n, read_at: n.read_at ?? now })));
-  }, []);
+  /* ------------------------------------------------------ notifications */
 
-  const markNotificationAsRead = useCallback((notificationId: string) => {
-    const now = new Date().toISOString();
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === notificationId ? { ...n, read_at: n.read_at ?? now } : n))
-    );
-  }, []);
+  const markNotificationsAsRead = useCallback(
+    async () =>
+      guard(async () => {
+        const now = new Date().toISOString();
+        setNotifications((prev) =>
+          prev.map((n) => ({ ...n, read_at: n.read_at ?? now }))
+        );
+        const { error: e } = await supabase
+          .from("notifications")
+          .update({ read_at: now })
+          .eq("user_id", currentUser.id)
+          .is("read_at", null);
+        if (e) throw new Error(e.message);
+      }),
+    [supabase, currentUser.id, guard]
+  );
+
+  const markNotificationAsRead = useCallback(
+    async (notificationId: string) =>
+      guard(async () => {
+        const now = new Date().toISOString();
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === notificationId ? { ...n, read_at: n.read_at ?? now } : n))
+        );
+        const { error: e } = await supabase
+          .from("notifications")
+          .update({ read_at: now })
+          .eq("id", notificationId);
+        if (e) throw new Error(e.message);
+      }),
+    [supabase, guard]
+  );
+
+  /* ------------------------------------------------------------ settings */
 
   const updateCurrentUser = useCallback(
-    (updates: Partial<Profile>) => {
-      const next = { ...currentUser, ...updates };
-      setCurrentUser(next);
-      // Keep the team roster in sync with the signed-in user's own profile.
-      setMemberships((members) =>
-        members.map((m) => (m.user_id === next.id ? { ...m, profile: next } : m))
-      );
-    },
-    [currentUser]
+    async (updates: Partial<Profile>) =>
+      guard(async () => {
+        setCurrentUser((prev) => ({ ...prev, ...updates }));
+        const { error: e } = await supabase
+          .from("profiles")
+          .update({
+            full_name: updates.full_name,
+            email: updates.email,
+            role_title: updates.role_title,
+            timezone: updates.timezone,
+            avatar_url: updates.avatar_url,
+          })
+          .eq("id", currentUser.id);
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, currentUser.id, refresh, guard]
   );
 
-  const updateOrganization = useCallback((updates: Partial<Organization>) => {
-    setOrganization((prev) => ({ ...prev, ...updates }));
-  }, []);
+  const updateOrganization = useCallback(
+    async (updates: Partial<Organization>) =>
+      guard(async () => {
+        setOrganization((prev) => ({ ...prev, ...updates }));
+        const { error: e } = await supabase
+          .from("organizations")
+          .update({
+            name: updates.name,
+            slug: updates.slug,
+            brand_voice: updates.brand_voice,
+            brand_domain: updates.brand_domain,
+            style_guide_url: updates.style_guide_url,
+          })
+          .eq("id", organization.id);
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, organization.id, refresh, guard]
+  );
 
-  const updateBrandVoice = useCallback((updates: Partial<BrandVoice>) => {
-    setBrandVoice((prev) => ({ ...prev, ...updates }));
-  }, []);
+  const updateBrandVoice = useCallback(
+    async (updates: Partial<BrandVoice>) =>
+      guard(async () => {
+        setBrandVoice((prev) => ({ ...prev, ...updates }));
+        const { error: e } = await supabase
+          .from("organizations")
+          .update({
+            brand_voice: updates.summary,
+            formality_level: updates.formality_level,
+            technical_depth: updates.technical_depth,
+            forbidden_words: updates.forbidden_words,
+          })
+          .eq("id", organization.id);
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, organization.id, refresh, guard]
+  );
 
   const updateNotificationPrefs = useCallback(
-    (updates: Partial<NotificationPreferences>) => {
-      setNotificationPrefs((prev) => ({ ...prev, ...updates }));
-    },
-    []
+    async (updates: Partial<NotificationPreferences>) =>
+      guard(async () => {
+        const next = { ...prefsRef.current, ...updates };
+        setNotificationPrefs(next);
+        const { error: e } = await supabase.from("notification_preferences").upsert({
+          user_id: currentUser.id,
+          email_deliverable: next.emailDeliverable,
+          email_revision: next.emailRevision,
+          email_comment: next.emailComment,
+          email_weekly_digest: next.emailWeeklyDigest,
+          in_app_status: next.inAppStatus,
+          in_app_comment: next.inAppComment,
+          in_app_deliverable: next.inAppDeliverable,
+        });
+        if (e) throw new Error(e.message);
+      }),
+    [supabase, currentUser.id, guard]
   );
 
+  /** Device-local; never hits the database. */
   const updateAppearance = useCallback((updates: Partial<AppearancePreferences>) => {
-    setAppearance((prev) => ({ ...prev, ...updates }));
+    setAppearance((prev) => {
+      const next = { ...prev, ...updates };
+      try {
+        localStorage.setItem(APPEARANCE_KEY, JSON.stringify(next));
+      } catch {
+        /* private mode */
+      }
+      return next;
+    });
   }, []);
 
+  /* ---------------------------------------------------------------- team */
+
   const inviteMember = useCallback(
-    (email: string, role: MemberRole) => {
-      const now = Date.now();
-      setInvitations((prev) => [
-        {
-          id: uid("inv"),
+    async (email: string, role: MemberRole) =>
+      guard(async () => {
+        const { error: e } = await supabase.from("invitations").insert({
           org_id: organization.id,
           email,
           role,
-          invited_by: currentUser.full_name,
-          token: uid("tok"),
-          status: "pending",
-          created_at: new Date(now).toISOString(),
-          expires_at: new Date(now + 7 * 86400000).toISOString(),
-        },
-        ...prev,
-      ]);
+          invited_by: currentUser.id || null,
+        });
+        if (e) throw new Error(e.message);
 
-      pushActivity({
-        org_id: organization.id,
-        actor_type: "client",
-        actor_name: currentUser.full_name,
-        type: "member_invited",
-        payload: { email, role },
-        created_at: new Date(now).toISOString(),
-      });
-    },
-    [organization.id, currentUser.full_name, pushActivity]
+        await supabase.from("activities").insert({
+          org_id: organization.id,
+          actor_type: "client",
+          actor_id: currentUser.id || null,
+          actor_name: currentUser.full_name,
+          type: "member_invited",
+          payload: { email, role },
+        });
+        await refresh();
+      }),
+    [supabase, organization.id, currentUser, refresh, guard]
   );
 
-  const revokeInvitation = useCallback((invitationId: string) => {
-    setInvitations((prev) => prev.filter((inv) => inv.id !== invitationId));
-  }, []);
+  const revokeInvitation = useCallback(
+    async (invitationId: string) =>
+      guard(async () => {
+        const { error: e } = await supabase
+          .from("invitations")
+          .delete()
+          .eq("id", invitationId);
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, refresh, guard]
+  );
 
-  const updateMemberRole = useCallback((membershipId: string, role: MemberRole) => {
-    setMemberships((prev) =>
-      prev.map((m) => (m.id === membershipId ? { ...m, role } : m))
-    );
-  }, []);
+  const updateMemberRole = useCallback(
+    async (membershipId: string, role: MemberRole) =>
+      guard(async () => {
+        const { error: e } = await supabase
+          .from("memberships")
+          .update({ role })
+          .eq("id", membershipId);
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, refresh, guard]
+  );
 
-  const removeMember = useCallback((membershipId: string) => {
-    setMemberships((prev) => prev.filter((m) => m.id !== membershipId));
-  }, []);
+  const removeMember = useCallback(
+    async (membershipId: string) =>
+      guard(async () => {
+        const { error: e } = await supabase
+          .from("memberships")
+          .delete()
+          .eq("id", membershipId);
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, refresh, guard]
+  );
 
-  /** Clears the locally persisted workspace and returns to the seeded fixtures. */
+  /**
+   * Clears the in-memory workspace. The Supabase session itself is ended by
+   * the caller (UserMenu) so the network failure mode stays visible there.
+   */
   const signOut = useCallback(() => {
-    try {
-      Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
-    } catch (e) {
-      console.warn("Failed to clear stored session", e);
-    }
-    setOrders(MOCK_ORDERS);
-    setOrganization(MOCK_ORGANIZATION);
-    setActivities(MOCK_ACTIVITIES);
-    setNotifications(MOCK_NOTIFICATIONS);
-    setCommentsMap(MOCK_COMMENTS);
-    setCurrentUser(MOCK_CURRENT_USER);
-    setMemberships(MOCK_MEMBERSHIPS);
-    setInvitations(MOCK_INVITATIONS);
-    setBrandVoice(MOCK_BRAND_VOICE);
-    setNotificationPrefs(MOCK_NOTIFICATION_PREFERENCES);
-    setAppearance(MOCK_APPEARANCE);
+    setOrders([]);
+    setOrganization(EMPTY_ORG);
+    setActivities([]);
+    setNotifications([]);
+    setCommentsMap({});
+    setCurrentUser(EMPTY_USER);
+    setMemberships([]);
+    setInvitations([]);
+    setBrandVoice(EMPTY_BRAND_VOICE);
+    setNotificationPrefs(EMPTY_PREFS);
+    setNeedsOnboarding(false);
   }, []);
 
   return (
@@ -662,6 +631,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         notificationPrefs,
         appearance,
         isHydrated,
+        needsOnboarding,
+        error,
+        refresh,
         updateCurrentUser,
         createOrder,
         updateOrder,
