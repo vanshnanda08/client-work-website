@@ -5,17 +5,25 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { User, Settings, CreditCard, LogOut, ChevronDown } from "lucide-react";
 import { useStore } from "@/lib/context/StoreContext";
+import { createClient } from "@/lib/supabase/client";
 
 export const UserMenu: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const router = useRouter();
   const { currentUser: user, signOut } = useStore();
 
-  const handleSignOut = () => {
-    if (!confirm("Sign out? This clears the workspace data saved in this browser.")) return;
+  const handleSignOut = async () => {
+    if (!confirm("Sign out of Inkwell?")) return;
     setIsOpen(false);
+
+    // End the Supabase session first, then clear the local cache. Order matters:
+    // if the network call fails we still hold a valid session, and wiping local
+    // state first would leave the UI signed-out while the cookie says otherwise.
+    await createClient().auth.signOut();
     signOut();
-    router.push("/");
+
+    router.replace("/login");
+    router.refresh();
   };
 
   return (
