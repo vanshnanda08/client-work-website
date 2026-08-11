@@ -1,0 +1,207 @@
+export type MemberRole = "owner" | "admin" | "member";
+
+export type OrderStatus =
+  | "draft"
+  | "submitted"
+  | "in_queue"
+  | "writing"
+  | "in_review"
+  | "delivered"
+  | "revision_requested"
+  | "approved";
+
+export type Priority = "standard" | "high" | "urgent";
+
+export type ContentType =
+  | "blog_post"
+  | "seo_article"
+  | "landing_page"
+  | "email_sequence"
+  | "case_study"
+  | "whitepaper"
+  | "press_release"
+  | "other";
+
+export type AuthorType = "client" | "writer" | "system";
+
+export type InvitationStatus = "pending" | "accepted" | "revoked" | "expired";
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  brand_voice: string;
+  brand_domain?: string;
+  style_guide_url: string;
+  plan: string;
+  word_credits_total: number;
+  word_credits_remaining: number;
+  renewal_date: string;
+  created_at: string;
+}
+
+export interface Profile {
+  id: string;
+  full_name: string;
+  email: string;
+  avatar_url?: string;
+  role_title?: string;
+  timezone?: string;
+  created_at: string;
+}
+
+export interface Membership {
+  id: string;
+  org_id: string;
+  user_id: string;
+  role: MemberRole;
+  profile?: Profile;
+  created_at: string;
+}
+
+export interface Invitation {
+  id: string;
+  org_id: string;
+  email: string;
+  role: MemberRole;
+  invited_by: string;
+  token: string;
+  status: InvitationStatus;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface Writer {
+  id: string;
+  full_name: string;
+  avatar_url: string;
+  title: string;
+  bio?: string;
+  specialties?: string[];
+  active: boolean;
+}
+
+export interface Order {
+  id: string;
+  org_id: string;
+  created_by: string;
+  title: string;
+  content_type: ContentType;
+  word_count_target: number;
+  primary_keyword: string;
+  secondary_keywords: string[];
+  brief: string;
+  tone: string;
+  target_audience?: string;
+  reference_urls: string[];
+  due_date: string; // YYYY-MM-DD
+  priority: Priority;
+  status: OrderStatus;
+  assigned_writer_id?: string;
+  assigned_writer?: Writer;
+  deliverables?: Deliverable[];
+  revisions?: Revision[];
+  comments_count?: number;
+  created_at: string;
+  updated_at: string;
+  outline_required?: boolean;
+  plagiarism_check?: boolean;
+  meta_description_required?: boolean;
+}
+
+export interface Deliverable {
+  id: string;
+  order_id: string;
+  version: number;
+  body_md: string;
+  file_url?: string;
+  file_name?: string;
+  file_size?: string;
+  google_doc_url?: string;
+  word_count: number;
+  submitted_at: string;
+  created_at: string;
+}
+
+export interface Revision {
+  id: string;
+  order_id: string;
+  deliverable_id: string;
+  requested_by: string;
+  requester_name?: string;
+  notes: string;
+  category?: "tone" | "factual" | "structure" | "seo" | "general";
+  status: "open" | "addressed";
+  created_at: string;
+}
+
+export interface Comment {
+  id: string;
+  order_id: string;
+  author_type: AuthorType;
+  author_id?: string;
+  author_name?: string;
+  author_avatar?: string;
+  writer_id?: string;
+  writer?: Writer;
+  body: string;
+  created_at: string;
+}
+
+export interface ActivityEvent {
+  id: string;
+  org_id: string;
+  order_id?: string;
+  order_title?: string;
+  actor_type: AuthorType;
+  actor_name: string;
+  actor_avatar?: string;
+  type:
+    | "order_created"
+    | "writer_assigned"
+    | "writing_started"
+    | "deliverable_submitted"
+    | "revision_requested"
+    | "order_approved"
+    | "comment_added"
+    | "member_invited";
+  payload: Record<string, string | number | boolean | undefined>;
+  created_at: string;
+}
+
+export interface Notification {
+  id: string;
+  user_id: string;
+  event_id: string;
+  title: string;
+  message: string;
+  order_id?: string;
+  read_at?: string | null;
+  created_at: string;
+  type: "deliverable" | "comment" | "status" | "system";
+}
+
+export interface BrandVoice {
+  summary: string;
+  formality_level: number;
+  technical_depth: number;
+  forbidden_words: string[];
+}
+
+export interface NotificationPreferences {
+  emailDeliverable: boolean;
+  emailRevision: boolean;
+  emailComment: boolean;
+  emailWeeklyDigest: boolean;
+  inAppStatus: boolean;
+  inAppComment: boolean;
+  inAppDeliverable: boolean;
+}
+
+export type ThemeMode = "light" | "dark" | "system";
+export type Density = "comfortable" | "compact";
+
+export interface AppearancePreferences {
+  theme: ThemeMode;
+  density: Density;
+}

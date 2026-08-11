@@ -1,26 +1,113 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #F8F9FA;
+  --foreground: #0F172A;
+  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/*
+ * Dark theme.
+ *
+ * Every surface in the app is painted with `bg-white` / the `neutral-*` ramp,
+ * and Tailwind v4 compiles those utilities down to `var(--color-*)`. So
+ * redefining the ramp here re-themes the entire dashboard without touching a
+ * single component class. The ramp is inverted (900 becomes the *lightest*
+ * value) so `text-neutral-900` stays the highest-contrast foreground and
+ * `bg-neutral-900` stays the highest-contrast button fill.
+ *
+ * `data-theme` is stamped on <html> by ThemeController (and by the inline
+ * pre-paint script in the root layout, which avoids a light flash on load).
+ */
+[data-theme="dark"] {
+  --background: oklch(14% 0.012 264);
+  --foreground: oklch(96% 0.003 264);
+
+  --color-white: oklch(18% 0.012 264);
+  --color-neutral-50: oklch(22% 0.012 264);
+  --color-neutral-100: oklch(26% 0.012 264);
+  --color-neutral-200: oklch(31% 0.012 264);
+  --color-neutral-300: oklch(38% 0.01 264);
+  --color-neutral-400: oklch(58% 0.01 264);
+  --color-neutral-500: oklch(68% 0.01 264);
+  --color-neutral-600: oklch(76% 0.008 264);
+  --color-neutral-700: oklch(84% 0.006 264);
+  --color-neutral-800: oklch(90% 0.004 264);
+  --color-neutral-900: oklch(96% 0.003 264);
+  --color-neutral-950: oklch(99% 0 264);
+
+  color-scheme: dark;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/*
+ * The sidebar is deliberately dark in *both* themes, and it styles itself with
+ * the light-mode semantics of the ramp (e.g. `bg-neutral-800` as a raised chip
+ * on near-black). Restating the stock ramp here opts its subtree out of the
+ * inversion above.
+ */
+.palette-base {
+  --color-white: #fff;
+  --color-neutral-50: oklch(98.5% 0 none);
+  --color-neutral-100: oklch(97% 0 none);
+  --color-neutral-200: oklch(92.2% 0 none);
+  --color-neutral-300: oklch(87% 0 none);
+  --color-neutral-400: oklch(70.8% 0 none);
+  --color-neutral-500: oklch(55.6% 0 none);
+  --color-neutral-600: oklch(43.9% 0 none);
+  --color-neutral-700: oklch(37.1% 0 none);
+  --color-neutral-800: oklch(26.9% 0 none);
+  --color-neutral-900: oklch(20.5% 0 none);
+  --color-neutral-950: oklch(14.5% 0 none);
+}
+
+/*
+ * Compact density tightens the vertical rhythm of tables and stacked list rows
+ * in the main workspace so more orders fit on screen.
+ */
+[data-density="compact"] main table :is(th, td) {
+  padding-block: 0.375rem;
+}
+
+[data-density="compact"] main .divide-y > * {
+  padding-block: 0.5rem;
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+@keyframes pulseSubtle {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+.animate-pulse-subtle {
+  animation: pulseSubtle 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
