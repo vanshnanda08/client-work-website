@@ -81,6 +81,8 @@ interface StoreContextType {
   updateBrandVoice: (updates: Partial<BrandVoice>) => Promise<void>;
   updateNotificationPrefs: (updates: Partial<NotificationPreferences>) => Promise<void>;
   updateAppearance: (updates: Partial<AppearancePreferences>) => void;
+  /** Populates an empty workspace with sample orders. Returns rows created. */
+  seedDemoData: () => Promise<number>;
   inviteMember: (email: string, role: MemberRole) => Promise<void>;
   revokeInvitation: (invitationId: string) => Promise<void>;
   updateMemberRole: (membershipId: string, role: MemberRole) => Promise<void>;
@@ -225,67 +227,81 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [refresh, supabase]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  /** Wrap a write so failures surface instead of vanishing. */
-  const guard = useCallback(async (fn: () => Promise<void>) => {
-    try {
-      setError(null);
-      await fn();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      throw e;
-    }
-  }, []);
+  /**
+   * Wrap a write so failures surface instead of vanishing.
+   *
+   * On failure it also re-reads the workspace. Several actions below update
+   * state optimistically *before* the write; when the write throws, that local
+   * state is a lie the user would keep seeing (an order badge showing a status
+   * the database rejected). The re-read discards it. A failure inside the
+   * re-read itself is swallowed so the caller still sees the original error.
+   */
+  const guard = useCallback(
+    async <T,>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        setError(null);
+        return await fn();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        await refresh().catch(() => {});
+        throw e;
+      }
+    },
+    [refresh]
+  );
 
   /* ------------------------------------------------------------- orders */
 
   const createOrder = useCallback(
-    async (data: NewOrderInput): Promise<string> => {
-      const isDraft = data.status === "draft";
+    async (data: NewOrderInput): Promise<string> =>
+      guard(async () => {
+        const isDraft = data.status === "draft";
 
-      const { data: row, error: insertError } = await supabase
-        .from("orders")
-        .insert({
-          org_id: organization.id,
-          created_by: currentUser.id || null,
-          title: data.title,
-          content_type: data.content_type,
-          word_count_target: Number(data.word_count_target) || 1200,
-          primary_keyword: data.primary_keyword ?? "",
-          secondary_keywords: data.secondary_keywords ?? [],
-          brief: data.brief,
-          tone: data.tone ?? "Authoritative, Clear & Engaging",
-          target_audience: data.target_audience ?? "B2B Tech Buyers",
-          reference_urls: data.reference_urls ?? [],
-          due_date: data.due_date,
-          priority: data.priority ?? "standard",
-          status: "draft",
-        })
-        .select("*")
-        .single();
-
-      if (insertError) {
-        setError(insertError.message);
-        throw new Error(insertError.message);
-      }
-
-      const orderId = row.id as string;
-
-      // Spending credits and assigning a writer happens server-side, so the
-      // balance cannot be tampered with from the browser.
-      if (!isDraft) {
-        const { error: rpcError } = await supabase.rpc("submit_order", {
-          p_order_id: orderId,
-        });
-        if (rpcError) {
-          setError(rpcError.message);
-          throw new Error(rpcError.message);
+        // Before the first load resolves, organization.id is "" — which
+        // Postgres rejects as an invalid uuid with an opaque message. Fail
+        // with something a user can act on instead.
+        if (!organization.id) {
+          throw new Error("Workspace is still loading. Try again in a moment.");
         }
-      }
 
-      await refresh();
-      return orderId;
-    },
-    [supabase, organization.id, currentUser.id, refresh]
+        const { data: row, error: insertError } = await supabase
+          .from("orders")
+          .insert({
+            org_id: organization.id,
+            created_by: currentUser.id || null,
+            title: data.title,
+            content_type: data.content_type,
+            word_count_target: Number(data.word_count_target) || 1200,
+            primary_keyword: data.primary_keyword ?? "",
+            secondary_keywords: data.secondary_keywords ?? [],
+            brief: data.brief,
+            tone: data.tone ?? "Authoritative, Clear & Engaging",
+            target_audience: data.target_audience ?? "B2B Tech Buyers",
+            reference_urls: data.reference_urls ?? [],
+            due_date: data.due_date,
+            priority: data.priority ?? "standard",
+            status: "draft",
+          })
+          .select("*")
+          .single();
+
+        if (insertError) throw new Error(insertError.message);
+
+        const orderId = row.id as string;
+
+        // Spending credits and assigning a writer happens server-side, so the
+        // balance cannot be tampered with from the browser.
+        if (!isDraft) {
+          const { error: rpcError } = await supabase.rpc("submit_order", {
+            p_order_id: orderId,
+          });
+          if (rpcError) throw new Error(rpcError.message);
+        }
+
+        await refresh();
+        return orderId;
+      }),
+    [supabase, organization.id, currentUser.id, refresh, guard]
   );
 
   const updateOrder = useCallback(
@@ -337,6 +353,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     async (orderId: string, status: OrderStatus, note?: string) =>
       guard(async () => {
         const order = orders.find((o) => o.id === orderId);
+
+        // Optimistic: a status change is the most visible action in the app, and
+        // waiting on the write plus a full refetch makes the button feel broken.
+        // On success the refresh() below reconciles; on failure guard() re-reads
+        // the workspace, which discards this.
+        setOrders((prev) =>
+          prev.map((o) =>
+            o.id === orderId ? { ...o, status, updated_at: new Date().toISOString() } : o
+          )
+        );
 
         const { error: e } = await supabase
           .from("orders")
@@ -392,6 +418,23 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       authorType: "client" | "writer" | "system" = "client"
     ) =>
       guard(async () => {
+        // Optimistic append so the thread updates as you hit Send. The temporary
+        // id is replaced by the real row on the next refresh.
+        const optimistic: Comment = {
+          id: `pending-${Date.now()}`,
+          order_id: orderId,
+          author_type: authorType,
+          author_id: authorType === "client" ? currentUser.id : undefined,
+          author_name: authorType === "client" ? currentUser.full_name : undefined,
+          author_avatar: authorType === "client" ? currentUser.avatar_url : undefined,
+          body,
+          created_at: new Date().toISOString(),
+        };
+        setCommentsMap((prev) => ({
+          ...prev,
+          [orderId]: [...(prev[orderId] || []), optimistic],
+        }));
+
         const { error: e } = await supabase.from("comments").insert({
           order_id: orderId,
           author_type: authorType,
@@ -401,7 +444,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (e) throw new Error(e.message);
         await refresh();
       }),
-    [supabase, currentUser.id, refresh, guard]
+    [supabase, currentUser.id, currentUser.full_name, currentUser.avatar_url, refresh, guard]
   );
 
   /* ------------------------------------------------------ notifications */
@@ -518,6 +561,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (e) throw new Error(e.message);
       }),
     [supabase, currentUser.id, guard]
+  );
+
+  /**
+   * Calls seed_demo_data(). Must run from the app rather than the SQL Editor:
+   * the function resolves the target org via auth.uid(), which is NULL for the
+   * dashboard's privileged SQL role.
+   */
+  const seedDemoData = useCallback(
+    async (): Promise<number> =>
+      guard(async () => {
+        const { data, error: e } = await supabase.rpc("seed_demo_data");
+        if (e) throw new Error(e.message);
+        await refresh();
+        return (data as number) ?? 0;
+      }),
+    [supabase, refresh, guard]
   );
 
   /** Device-local; never hits the database. */
@@ -647,6 +706,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         updateBrandVoice,
         updateNotificationPrefs,
         updateAppearance,
+        seedDemoData,
         inviteMember,
         revokeInvitation,
         updateMemberRole,

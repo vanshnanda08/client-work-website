@@ -5,8 +5,18 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Shown in place of a date that cannot be parsed. */
+const INVALID_DATE_PLACEHOLDER = "—";
+
+/**
+ * Intl throws RangeError on an Invalid Date, which takes down whatever is
+ * rendering it — the placeholder organization used before the first load has
+ * renewal_date: "", and that crashed the whole app shell via OrgSwitcher.
+ * Empty and malformed values render as a dash instead.
+ */
 export function formatDate(dateString: string | Date): string {
   const date = typeof dateString === "string" ? new Date(dateString) : dateString;
+  if (Number.isNaN(date.getTime())) return INVALID_DATE_PLACEHOLDER;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
@@ -16,6 +26,7 @@ export function formatDate(dateString: string | Date): string {
 
 export function formatRelativeTime(dateString: string | Date): string {
   const date = typeof dateString === "string" ? new Date(dateString) : dateString;
+  if (Number.isNaN(date.getTime())) return INVALID_DATE_PLACEHOLDER;
   const now = new Date();
   const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
 

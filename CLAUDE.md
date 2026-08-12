@@ -78,7 +78,7 @@ browsers are downloaded). Those scripts lived in a scratch dir and are **not in
 the repo**. If you need regression cover, adding Playwright properly is a
 reasonable first infra task — but ask before adding a dependency.
 
-Lint currently reports **0 errors, ~53 warnings**. The warnings are pre-existing
+Lint currently reports **0 errors, ~59 warnings**. The warnings are pre-existing
 cosmetic noise (unused `lucide` imports, `<img>` vs `next/image`). Zero errors is
 the bar; don't let a new error land.
 
@@ -146,25 +146,34 @@ no org and every policy denies them, so the dashboard is silently empty.
 ## The store — read this before touching state
 
 `lib/context/StoreContext.tsx` is the whole state layer. `useStore()` throws
-outside the provider. It exposes 11 data slices and 18 actions:
+outside the provider. It exposes 11 data slices and 19 actions:
 
 **Slices:** `orders`, `organization`, `activities`, `notifications`,
 `commentsMap`, `currentUser`, `memberships`, `invitations`, `brandVoice`,
-`notificationPrefs`, `appearance`, plus `isHydrated`.
+`notificationPrefs`, `appearance`, plus `isHydrated`, `needsOnboarding` and
+`error`.
 
 **Actions:** `createOrder`, `updateOrder`, `submitDraft`, `deleteOrder`,
 `updateOrderStatus`, `addComment`, `markNotificationsAsRead`,
 `markNotificationAsRead`, `updateCurrentUser`, `updateOrganization`,
 `updateBrandVoice`, `updateNotificationPrefs`, `updateAppearance`,
-`inviteMember`, `revokeInvitation`, `updateMemberRole`, `removeMember`,
-`signOut`.
+`seedDemoData`, `inviteMember`, `revokeInvitation`, `updateMemberRole`,
+`removeMember`, `signOut`. Plus `refresh`, which re-reads the workspace.
 
 ### Rules that are load-bearing, not style
 
-**1. Every action is `async` and ends with `refresh()`.** Writes go to Postgres,
-then the whole workspace is re-read. This is deliberately simple — no optimistic
-cache to desynchronise. It costs a round trip per mutation; if that becomes a
-problem, optimise a specific action, don't reintroduce a parallel cache.
+**1. Every action is `async`, goes through `guard()`, and ends with `refresh()`.**
+Writes go to Postgres, then the whole workspace is re-read. It costs a round trip
+per mutation; if that becomes a problem, optimise a specific action, don't
+reintroduce a parallel cache.
+
+A few actions (`updateOrderStatus`, `addComment`, the notification read
+actions) *do* update state optimistically first, because waiting on the write
+plus a refetch makes the button feel broken. That is safe only because
+`guard()` re-reads the workspace when a write throws — the optimistic value is
+otherwise a lie the user keeps seeing, since the trailing `refresh()` is
+skipped on the error path. **If you add an optimistic action, it must go
+through `guard()`.**
 
 **2. `await` at the call site whenever the result or ordering matters.** TypeScript
 will *not* catch this: a template literal happily interpolates a Promise, so
@@ -321,7 +330,11 @@ Either mount them or delete them; don't leave the ambiguity growing. Also unused
   Use `{!!count && count > 0 && ...}`.
 - `formatDate` expects an ISO string or `Date`. `Order.due_date` is a bare
   `YYYY-MM-DD` string and is displayed raw in several places — don't assume it's
-  been formatted.
+  been formatted. `formatDate`/`formatRelativeTime` return `"—"` for an
+  unparseable value rather than throwing; `Intl` raises `RangeError` on an
+  Invalid Date, and because `OrgSwitcher` formats `organization.renewal_date`
+  (`""` on the pre-load placeholder org) that used to crash the whole app shell.
+  Keep the guard if you touch those helpers.
 - `DeliverablesViewer` contains a hand-rolled markdown renderer that splits on
   `\n\n` and uses `dangerouslySetInnerHTML` for bold/italic. Content is fixture
   data, so it's contained today — **if deliverables ever become user- or
