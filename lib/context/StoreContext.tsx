@@ -83,6 +83,8 @@ interface StoreContextType {
   updateAppearance: (updates: Partial<AppearancePreferences>) => void;
   /** Populates an empty workspace with sample orders. Returns rows created. */
   seedDemoData: () => Promise<number>;
+  /** Creates the org + owner membership for a user who belongs to none. */
+  bootstrapWorkspace: (name: string) => Promise<void>;
   inviteMember: (email: string, role: MemberRole) => Promise<void>;
   revokeInvitation: (invitationId: string) => Promise<void>;
   updateMemberRole: (membershipId: string, role: MemberRole) => Promise<void>;
@@ -579,6 +581,26 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     [supabase, refresh, guard]
   );
 
+  /**
+   * Creates an organization and owner membership for a user who has none.
+   *
+   * The signup page can only do this when signUp() returns a session, which it
+   * does not when email confirmation is enabled. Those users arrive here after
+   * confirming and signing in, with no org and every RLS policy denying them,
+   * so this is the path that actually completes their setup.
+   */
+  const bootstrapWorkspace = useCallback(
+    async (name: string) =>
+      guard(async () => {
+        const { error: e } = await supabase.rpc("bootstrap_organization", {
+          org_name: name,
+        });
+        if (e) throw new Error(e.message);
+        await refresh();
+      }),
+    [supabase, refresh, guard]
+  );
+
   /** Device-local; never hits the database. */
   const updateAppearance = useCallback((updates: Partial<AppearancePreferences>) => {
     setAppearance((prev) => {
@@ -707,6 +729,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         updateNotificationPrefs,
         updateAppearance,
         seedDemoData,
+        bootstrapWorkspace,
         inviteMember,
         revokeInvitation,
         updateMemberRole,
