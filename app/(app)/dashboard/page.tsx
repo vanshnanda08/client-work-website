@@ -10,6 +10,14 @@ import { formatNumber, formatRelativeTime } from "@/lib/utils";
 import { CONTENT_TYPES } from "@/lib/config";
 import { Button } from "@/components/ui/Button";
 
+/**
+ * The demo seeder fills a workspace with eight fabricated orders. That is a
+ * development affordance — a real client must never be offered it on their own
+ * empty dashboard. NODE_ENV is inlined at build time, so the button and its
+ * handler are dropped from the production bundle entirely.
+ */
+const SHOW_DEMO_SEED = process.env.NODE_ENV === "development";
+
 export default function DashboardPage() {
   const { orders, organization, activities, seedDemoData } = useStore();
 
@@ -129,8 +137,8 @@ export default function DashboardPage() {
             </p>
 
             {/* Only offered while the workspace is genuinely empty — seed_demo_data()
-                refuses to run once any order exists. */}
-            {orders.length === 0 && (
+                refuses to run once any order exists — and only in development. */}
+            {SHOW_DEMO_SEED && orders.length === 0 && (
               <div className="mt-5 pt-5 border-t border-neutral-100 max-w-xs mx-auto space-y-2">
                 <p className="text-[11px] text-neutral-400">
                   Want something to look at? Load a sample workspace with eight orders
