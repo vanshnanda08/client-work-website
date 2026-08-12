@@ -11,7 +11,7 @@ interface RevisionRequestModalProps {
   onClose: () => void;
   orderTitle: string;
   assignedWriterName?: string;
-  onSubmit: (data: { category: string; notes: string }) => void;
+  onSubmit: (data: { category: string; notes: string }) => void | Promise<void>;
 }
 
 export const RevisionRequestModal: React.FC<RevisionRequestModalProps> = ({
@@ -33,18 +33,26 @@ export const RevisionRequestModal: React.FC<RevisionRequestModalProps> = ({
     { id: "general", label: "General Edits", desc: "Minor polishing or specific sentence fixes" },
   ];
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [error, setError] = useState("");
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!notes.trim()) {
-      alert("Please provide revision feedback instructions.");
+      setError("Please provide revision feedback instructions.");
       return;
     }
+    setError("");
     setIsSubmitting(true);
-    setTimeout(() => {
-      onSubmit({ category, notes });
-      setIsSubmitting(false);
+    try {
+      // Awaited: onSubmit writes to Supabase. Closing before it resolves would
+      // hide any failure as an unhandled rejection.
+      await onSubmit({ category, notes });
       onClose();
-    }, 600);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -96,6 +104,12 @@ export const RevisionRequestModal: React.FC<RevisionRequestModalProps> = ({
         />
 
         {/* Action Buttons */}
+        {error && (
+          <p role="alert" className="text-xs font-medium text-rose-600">
+            {error}
+          </p>
+        )}
+
         <div className="pt-3 border-t border-neutral-100 flex items-center justify-end gap-2.5">
           <Button type="button" variant="outline" size="sm" onClick={onClose}>
             Cancel

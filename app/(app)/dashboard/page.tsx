@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Clock, Zap, ArrowRight, FileText, Plus } from "lucide-react";
+import { CheckCircle2, Clock, Zap, ArrowRight, FileText, Sparkles } from "lucide-react";
 import { OrderStatusBadge } from "@/components/orders/OrderStatusBadge";
 import { RecentActivityFeed } from "@/components/dashboard/RecentActivityFeed";
 import { useStore } from "@/lib/context/StoreContext";
@@ -11,7 +11,10 @@ import { CONTENT_TYPES } from "@/lib/config";
 import { Button } from "@/components/ui/Button";
 
 export default function DashboardPage() {
-  const { orders, organization, activities } = useStore();
+  const { orders, organization, activities, seedDemoData } = useStore();
+
+  const [isSeeding, setIsSeeding] = useState(false);
+  const [seedError, setSeedError] = useState("");
 
   // Metric counts
   const inFlightCount = useMemo(
@@ -121,7 +124,44 @@ export default function DashboardPage() {
           <div className="py-12 text-center">
             <FileText className="h-8 w-8 text-neutral-300 mx-auto mb-2" />
             <p className="text-xs font-semibold text-neutral-700">No active orders</p>
-            <p className="text-xs text-neutral-400 mt-0.5">Click &quot;New Order&quot; in the header to create your first brief.</p>
+            <p className="text-xs text-neutral-400 mt-0.5">
+              Click &quot;New Order&quot; in the header to create your first brief.
+            </p>
+
+            {/* Only offered while the workspace is genuinely empty — seed_demo_data()
+                refuses to run once any order exists. */}
+            {orders.length === 0 && (
+              <div className="mt-5 pt-5 border-t border-neutral-100 max-w-xs mx-auto space-y-2">
+                <p className="text-[11px] text-neutral-400">
+                  Want something to look at? Load a sample workspace with eight orders
+                  across every status.
+                </p>
+                {seedError && (
+                  <p role="alert" className="text-[11px] font-medium text-rose-600">
+                    {seedError}
+                  </p>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  isLoading={isSeeding}
+                  onClick={async () => {
+                    setSeedError("");
+                    setIsSeeding(true);
+                    try {
+                      await seedDemoData();
+                    } catch (err) {
+                      setSeedError(err instanceof Error ? err.message : String(err));
+                    } finally {
+                      setIsSeeding(false);
+                    }
+                  }}
+                  leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+                >
+                  Load sample data
+                </Button>
+              </div>
+            )}
           </div>
         ) : (
           <div className="divide-y divide-neutral-100">

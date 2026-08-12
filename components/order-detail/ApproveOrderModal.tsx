@@ -10,7 +10,7 @@ interface ApproveOrderModalProps {
   onClose: () => void;
   orderTitle: string;
   assignedWriterName?: string;
-  onApprove: (feedback?: { rating: number; note: string }) => void;
+  onApprove: (feedback?: { rating: number; note: string }) => void | Promise<void>;
 }
 
 export const ApproveOrderModal: React.FC<ApproveOrderModalProps> = ({
@@ -24,13 +24,22 @@ export const ApproveOrderModal: React.FC<ApproveOrderModalProps> = ({
   const [note, setNote] = useState("");
   const [isApproving, setIsApproving] = useState(false);
 
-  const handleConfirm = () => {
+  const [error, setError] = useState("");
+
+  const handleConfirm = async () => {
+    setError("");
     setIsApproving(true);
-    setTimeout(() => {
-      onApprove({ rating, note });
-      setIsApproving(false);
+    try {
+      // Awaited: onApprove now writes to Supabase. Firing and forgetting would
+      // close the modal before the write resolved and swallow any failure as an
+      // unhandled rejection.
+      await onApprove({ rating, note });
       onClose();
-    }, 600);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsApproving(false);
+    }
   };
 
   return (
@@ -88,6 +97,12 @@ export const ApproveOrderModal: React.FC<ApproveOrderModalProps> = ({
             className="w-full h-10 px-3.5 bg-white text-neutral-900 text-xs rounded-xl border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-900/10 focus:border-neutral-900"
           />
         </div>
+
+        {error && (
+          <p role="alert" className="text-xs font-medium text-rose-600">
+            {error}
+          </p>
+        )}
 
         {/* Buttons */}
         <div className="pt-3 border-t border-neutral-100 flex items-center justify-end gap-2.5">
