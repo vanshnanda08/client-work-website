@@ -100,7 +100,8 @@ app/
       profile · organization · team · brand-voice · notifications · plan · appearance
 
 components/
-  app-shell/    Sidebar, TopNav, OrgSwitcher, UserMenu, NotificationsBell, ThemeController
+  app-shell/    Sidebar, TopNav, OrgSwitcher, UserMenu, NotificationsBell,
+                ThemeController, WorkspaceGate
   orders/       OrdersTable, OrdersFilterBar, OrdersPagination, OrderStatusBadge
   order-detail/ DeliverablesViewer, CommentsThread, BriefSummaryCard,
                 StatusTimelineStepper, ApproveOrderModal, RevisionRequestModal
@@ -123,6 +124,9 @@ lib/
 
 proxy.ts                  Session refresh + route guard (NOT middleware.ts)
 supabase/migrations/      0001 schema+RLS · 0002 onboarding+writers · 0003 demo seed
+supabase/diagnose.sql     Paste-and-run triage for "my order isn't in Supabase"
+supabase/deliver-order.sql  Dev helper: pushes an order to 'delivered' so the
+                          Approve / Request Changes branch is reachable
 .env.local                NEXT_PUBLIC_SUPABASE_URL / _ANON_KEY (gitignored)
 ```
 
@@ -139,14 +143,45 @@ queries `memberships` recurses infinitely. Each sets `search_path = public` to
 block search-path hijacking. **All 12 tables have RLS enabled; keep it that way.**
 
 Signup path: `handle_new_user()` (trigger on `auth.users`) creates the profile
-and notification prefs → the signup page calls `bootstrap_organization()` to
-create the org and owner membership. Without the second step a user belongs to
-no org and every policy denies them, so the dashboard is silently empty.
+and notification prefs → `bootstrap_organization()` creates the org and owner
+membership. Without the second step a user belongs to no org and every policy
+denies them, so the dashboard is silently empty.
+
+**The second step has two call sites, and it needs both.** The signup page can
+only run it when `signUp()` returns a session, which it does **not** when email
+confirmation is enabled — Supabase's default for new projects. Those users
+confirm, sign in, and arrive with no organization. So `WorkspaceGate` also
+renders a "Name your workspace" form (via the `bootstrapWorkspace` action)
+whenever `needsOnboarding` is true. That form is the only recovery path: signing
+up again fails because the account already exists. It shipped as a fix for
+exactly that lockout — **do not reduce it back to a static message.**
+
+## Deployment
+
+Hosted on Vercel from `origin/main` (`vanshnanda08/client-work-website`). Two
+things are configuration rather than code, so they do not travel with a commit
+and are invisible to a passing `npm run build`:
+
+1. **`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` must exist
+   in the host before the build runs.** Next inlines `NEXT_PUBLIC_` values into
+   the client bundle at build time, so setting them after a deploy ships a
+   bundle carrying empty strings — it needs a rebuild, not a restart. The same
+   is why changing `.env.local` locally requires restarting `next dev`.
+2. **Supabase → Authentication → URL Configuration must name the deployed
+   domain.** Site URL and a `<domain>/auth/callback` entry under Redirect URLs.
+   These default to localhost, and every confirmation and password-reset email
+   is built from them — wrong values send real users to an address that only
+   resolves on a developer's machine, and nothing in the app can detect it.
+
+Deploy verification has to include **signing up with a fresh address**, not just
+loading the dashboard. The org-bootstrap lockout described under Database was
+invisible to every other check: the build passed, the app loaded, and existing
+accounts worked fine, because only brand-new users hit it.
 
 ## The store — read this before touching state
 
 `lib/context/StoreContext.tsx` is the whole state layer. `useStore()` throws
-outside the provider. It exposes 11 data slices and 19 actions:
+outside the provider. It exposes 11 data slices and 20 actions:
 
 **Slices:** `orders`, `organization`, `activities`, `notifications`,
 `commentsMap`, `currentUser`, `memberships`, `invitations`, `brandVoice`,
@@ -157,8 +192,9 @@ outside the provider. It exposes 11 data slices and 19 actions:
 `updateOrderStatus`, `addComment`, `markNotificationsAsRead`,
 `markNotificationAsRead`, `updateCurrentUser`, `updateOrganization`,
 `updateBrandVoice`, `updateNotificationPrefs`, `updateAppearance`,
-`seedDemoData`, `inviteMember`, `revokeInvitation`, `updateMemberRole`,
-`removeMember`, `signOut`. Plus `refresh`, which re-reads the workspace.
+`seedDemoData`, `bootstrapWorkspace`, `inviteMember`, `revokeInvitation`,
+`updateMemberRole`, `removeMember`, `signOut`. Plus `refresh`, which re-reads
+the workspace.
 
 ### Rules that are load-bearing, not style
 
@@ -299,7 +335,7 @@ drawer.
 | Downloads | Generated client-side from `body_md` as real `.md` files. **Not `.docx`** — that would need a zip dependency. |
 | Email notifications | Preferences persist, but nothing is ever sent. The *in-app* toggles genuinely gate the bell. |
 | Plan changes | `mailto:` links to `APP_CONFIG.supportEmail`. No billing. |
-| Writer activity | **Still mocked.** No writer or agency UI exists, so nothing advances an order past `submitted`. `seed_demo_data()` fabricates the later statuses. An `/admin` page is the planned fix. |
+| Writer activity | **Still mocked.** No writer or agency UI exists, so nothing advances an order past `submitted`. `seed_demo_data()` fabricates the later statuses; `supabase/deliver-order.sql` promotes one order by hand. An `/admin` page is the planned fix. |
 | Deliverables | Clients have `select` only — no insert policy. `/admin` will need one, gated on a platform-admin check. Do not widen the client policy. |
 
 **Order ids**: the primary key is a uuid (used in routes and lookups); the
@@ -308,6 +344,17 @@ human-facing `ORD-####` lives in `orders.reference`, generated by a trigger.
 
 **Seeding**: `seed_demo_data()` (migration 0003) fills the caller's org with 8
 orders spanning every status. It refuses to run if the org already has orders.
+The "Load sample data" button that calls it is gated behind
+`SHOW_DEMO_SEED = process.env.NODE_ENV === "development"` on the dashboard, so
+it is compiled out of production entirely — a paying client should never be
+invited to fill their own workspace with fabricated orders. Keep that gate if
+you move the button.
+
+**Reaching the review UI**: Approve / Request Changes only render on a
+`delivered` order, and nothing in the app produces that status. Run
+`supabase/deliver-order.sql` in the SQL Editor to promote one, then reload the
+browser — the store has no realtime subscription, so an externally-changed row
+is invisible to an open page until it refetches.
 
 ## Dead code (unused, intentionally left)
 
