@@ -1,0 +1,21 @@
+# Netlify build configuration.
+#
+# Netlify auto-installs its Next.js Runtime when it detects Next.js, so the
+# plugin is declared here only to make the dependency explicit and reviewable.
+#
+# Note the two build-time facts that bite this app specifically:
+#   * NEXT_PUBLIC_SUPABASE_URL / _ANON_KEY are inlined into the client bundle
+#     by `next build`, so they must exist in Netlify's environment BEFORE the
+#     first build runs. Adding them afterwards needs a rebuild, not a redeploy.
+#   * Next 16 requires Node >= 20.9. Netlify's default image node can lag, so
+#     the version is pinned rather than inherited.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
