@@ -132,7 +132,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ orderId:
           <div className="flex items-center gap-3">
             <CheckCircle2 className="h-5 w-5 text-teal-600 shrink-0" />
             <div className="text-xs">
-              <span className="font-bold">Order Approved & Completed!</span> You can now download final DOCX/PDF files or copy the markdown copy below.
+              {/* Downloads are generated in the browser from body_md, so the
+                  only format that exists is Markdown. Do not promise DOCX or
+                  PDF here — nothing in the app can produce them. */}
+              <span className="font-bold">Order Approved & Completed!</span> You can now
+              download the final Markdown file or copy the text below.
             </div>
           </div>
           <button

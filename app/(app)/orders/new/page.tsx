@@ -494,13 +494,15 @@ export default function NewOrderPage() {
                     <div className="text-xs font-bold text-neutral-900">
                       Deliverable Formats
                     </div>
+                    {/* Deliverables are rebuilt in the browser from body_md and
+                        handed over as .md — DOCX and PDF do not exist here. */}
                     <div className="text-[11px] text-neutral-500">
-                      DOCX, PDF & Markdown
+                      Markdown (.md) download
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-1 text-xs font-semibold text-neutral-700">
-                  <span>{includeMarkdownExport ? "All" : "DOCX"}</span>
+                  <span>{includeMarkdownExport ? "Included" : "Off"}</span>
                   <ChevronRight className="h-3.5 w-3.5 text-neutral-400" />
                 </div>
               </div>

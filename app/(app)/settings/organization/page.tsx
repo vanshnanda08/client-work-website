@@ -28,19 +28,35 @@ function OrganizationSettingsForm() {
   const [styleGuideUrl, setStyleGuideUrl] = useState(org.style_guide_url);
   const [brandDomain, setBrandDomain] = useState(org.brand_domain || "acmecloud.io");
   const [saved, setSaved] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
-  const handleSave = (e: React.FormEvent) => {
+  /**
+   * Awaited so "Saved" only ever follows a write that actually succeeded.
+   * Two failures are routine here: `slug` is UNIQUE across all workspaces, so a
+   * common slug collides, and the org_update policy requires org admin, so a
+   * member-role user updates nothing. Neither should read as success.
+   */
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanSlug = slugify(slug) || org.slug;
     setSlug(cleanSlug);
-    updateOrganization({
-      name: orgName.trim(),
-      slug: cleanSlug,
-      style_guide_url: styleGuideUrl.trim(),
-      brand_domain: brandDomain.trim(),
-    });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setSaveError("");
+    setIsSaving(true);
+    try {
+      await updateOrganization({
+        name: orgName.trim(),
+        slug: cleanSlug,
+        style_guide_url: styleGuideUrl.trim(),
+        brand_domain: brandDomain.trim(),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -88,16 +104,24 @@ function OrganizationSettingsForm() {
           />
         </div>
 
-        <div className="pt-4 border-t border-neutral-100 flex items-center justify-between">
-          <Button type="submit" size="md" variant="primary">
-            {saved ? "Saved Organization!" : "Save Changes"}
-          </Button>
-
-          {saved && (
-            <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1">
-              <Check className="h-4 w-4" /> Organization updated successfully
-            </span>
+        <div className="pt-4 border-t border-neutral-100 space-y-2">
+          {saveError && (
+            <p role="alert" className="text-xs font-medium text-rose-600">
+              {saveError}
+            </p>
           )}
+
+          <div className="flex items-center justify-between">
+            <Button type="submit" size="md" variant="primary" isLoading={isSaving}>
+              {saved ? "Saved Organization!" : "Save Changes"}
+            </Button>
+
+            {saved && (
+              <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1">
+                <Check className="h-4 w-4" /> Organization updated successfully
+              </span>
+            )}
+          </div>
         </div>
       </form>
     </div>

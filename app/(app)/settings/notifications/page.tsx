@@ -37,16 +37,27 @@ function NotificationSettingsForm() {
   const { notificationPrefs, updateNotificationPrefs } = useStore();
   const [preferences, setPreferences] = useState<NotificationPreferences>(notificationPrefs);
   const [saved, setSaved] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const toggle = (key: keyof NotificationPreferences) => {
     setPreferences((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  // Awaited so "Saved" only ever follows a write that actually succeeded.
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateNotificationPrefs(preferences);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setSaveError("");
+    setIsSaving(true);
+    try {
+      await updateNotificationPrefs(preferences);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -133,16 +144,24 @@ function NotificationSettingsForm() {
         </div>
 
         {/* Save button */}
-        <div className="pt-4 border-t border-neutral-100 flex items-center justify-between">
-          <Button type="submit" size="md" variant="primary">
-            {saved ? "Preferences Saved!" : "Save Preferences"}
-          </Button>
-
-          {saved && (
-            <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1">
-              <Check className="h-4 w-4" /> Preferences updated
-            </span>
+        <div className="pt-4 border-t border-neutral-100 space-y-2">
+          {saveError && (
+            <p role="alert" className="text-xs font-medium text-rose-600">
+              {saveError}
+            </p>
           )}
+
+          <div className="flex items-center justify-between">
+            <Button type="submit" size="md" variant="primary" isLoading={isSaving}>
+              {saved ? "Preferences Saved!" : "Save Preferences"}
+            </Button>
+
+            {saved && (
+              <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1">
+                <Check className="h-4 w-4" /> Preferences updated
+              </span>
+            )}
+          </div>
         </div>
       </form>
     </div>

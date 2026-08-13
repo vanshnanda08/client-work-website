@@ -14,7 +14,7 @@ export default function BrandVoiceSettingsPage() {
 }
 
 function BrandVoiceForm() {
-  const { brandVoice, updateBrandVoice, updateOrganization } = useStore();
+  const { brandVoice, updateBrandVoice } = useStore();
 
   const [voiceSummary, setVoiceSummary] = useState(brandVoice.summary);
   const [formalityLevel, setFormalityLevel] = useState(brandVoice.formality_level);
@@ -22,6 +22,8 @@ function BrandVoiceForm() {
   const [forbiddenWords, setForbiddenWords] = useState<string[]>(brandVoice.forbidden_words);
   const [wordInput, setWordInput] = useState("");
   const [saved, setSaved] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const handleAddWord = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && wordInput.trim()) {
@@ -37,18 +39,31 @@ function BrandVoiceForm() {
     setForbiddenWords(forbiddenWords.filter((w) => w !== word));
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  /**
+   * One awaited write, not two. `updateBrandVoice` already persists `summary`
+   * into organizations.brand_voice — the column the brief builder reads — so
+   * the extra updateOrganization call that used to follow it was a second
+   * concurrent UPDATE against the same row, racing its own refresh() for no
+   * gain. Awaiting also keeps "Saved" honest when the write is rejected.
+   */
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateBrandVoice({
-      summary: voiceSummary.trim(),
-      formality_level: formalityLevel,
-      technical_depth: technicalDepth,
-      forbidden_words: forbiddenWords,
-    });
-    // The brief builder reads the organization's brand_voice, so keep it in sync.
-    updateOrganization({ brand_voice: voiceSummary.trim() });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setSaveError("");
+    setIsSaving(true);
+    try {
+      await updateBrandVoice({
+        summary: voiceSummary.trim(),
+        formality_level: formalityLevel,
+        technical_depth: technicalDepth,
+        forbidden_words: forbiddenWords,
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -158,16 +173,24 @@ function BrandVoiceForm() {
         </div>
 
         {/* Save button */}
-        <div className="pt-4 border-t border-neutral-100 flex items-center justify-between">
-          <Button type="submit" size="md" variant="primary">
-            {saved ? "Saved Brand Voice!" : "Save Guidelines"}
-          </Button>
-
-          {saved && (
-            <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1">
-              <Check className="h-4 w-4" /> Guidelines updated for all future orders
-            </span>
+        <div className="pt-4 border-t border-neutral-100 space-y-2">
+          {saveError && (
+            <p role="alert" className="text-xs font-medium text-rose-600">
+              {saveError}
+            </p>
           )}
+
+          <div className="flex items-center justify-between">
+            <Button type="submit" size="md" variant="primary" isLoading={isSaving}>
+              {saved ? "Saved Brand Voice!" : "Save Guidelines"}
+            </Button>
+
+            {saved && (
+              <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1">
+                <Check className="h-4 w-4" /> Guidelines updated for all future orders
+              </span>
+            )}
+          </div>
         </div>
       </form>
     </div>

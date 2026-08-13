@@ -23,8 +23,15 @@ export default function TeamSettingsPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<MemberRole>("member");
   const [inviteError, setInviteError] = useState("");
+  const [isInviting, setIsInviting] = useState(false);
 
-  const handleSendInvite = (e: React.FormEvent) => {
+  /**
+   * Awaited: the modal must not close until the row is written. The duplicate
+   * checks above only see loaded state, and the table enforces its own
+   * UNIQUE (org_id, email) — a collision surfaces here rather than closing the
+   * modal on an invitation that was never created.
+   */
+  const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     const email = inviteEmail.trim().toLowerCase();
     if (!email) return;
@@ -38,16 +45,31 @@ export default function TeamSettingsPage() {
       return;
     }
 
-    inviteMember(email, inviteRole);
-    setInviteEmail("");
-    setInviteRole("member");
     setInviteError("");
-    setIsInviteModalOpen(false);
+    setIsInviting(true);
+    try {
+      await inviteMember(email, inviteRole);
+      setInviteEmail("");
+      setInviteRole("member");
+      setIsInviteModalOpen(false);
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsInviting(false);
+    }
   };
+
+  /**
+   * These three write and then let the store report failure: it re-reads the
+   * workspace on error and renders the message in the WorkspaceGate banner, so
+   * the row reappears if the delete was rejected. The catch is only here to
+   * keep a rejection from becoming an unhandled promise rejection.
+   */
+  const reportedByStore = () => {};
 
   const handleRemoveMember = (membershipId: string, name?: string) => {
     if (!confirm(`Remove ${name || "this member"} from the workspace?`)) return;
-    removeMember(membershipId);
+    removeMember(membershipId).catch(reportedByStore);
   };
 
   return (
@@ -112,7 +134,12 @@ export default function TeamSettingsPage() {
                     <>
                       <select
                         value={member.role}
-                        onChange={(e) => updateMemberRole(member.id, e.target.value as MemberRole)}
+                        onChange={(e) =>
+                          updateMemberRole(
+                            member.id,
+                            e.target.value as MemberRole
+                          ).catch(reportedByStore)
+                        }
                         className="h-8 px-2 bg-white text-neutral-900 text-xs rounded-lg border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-900/10 focus:border-neutral-900 font-semibold capitalize cursor-pointer"
                         aria-label={`Role for ${member.profile?.full_name}`}
                       >
@@ -163,7 +190,7 @@ export default function TeamSettingsPage() {
                     <Clock className="h-3 w-3" /> Pending
                   </span>
                   <button
-                    onClick={() => revokeInvitation(inv.id)}
+                    onClick={() => revokeInvitation(inv.id).catch(reportedByStore)}
                     className="p-1.5 text-neutral-400 hover:text-rose-600 rounded-lg hover:bg-neutral-100 transition cursor-pointer"
                     title="Revoke Invite"
                   >
@@ -199,7 +226,9 @@ export default function TeamSettingsPage() {
           />
 
           {inviteError && (
-            <p className="text-xs font-medium text-rose-600">{inviteError}</p>
+            <p role="alert" className="text-xs font-medium text-rose-600">
+              {inviteError}
+            </p>
           )}
 
           <div className="space-y-1.5">
@@ -223,7 +252,7 @@ export default function TeamSettingsPage() {
             >
               Cancel
             </Button>
-            <Button type="submit" variant="primary" size="sm">
+            <Button type="submit" variant="primary" size="sm" isLoading={isInviting}>
               Send Invitation
             </Button>
           </div>

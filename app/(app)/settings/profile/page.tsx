@@ -22,6 +22,8 @@ function ProfileSettingsForm() {
   const [roleTitle, setRoleTitle] = useState(user.role_title || "");
   const [timezone, setTimezone] = useState(user.timezone || "America/New_York (EST)");
   const [saved, setSaved] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [avatarError, setAvatarError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -44,8 +46,13 @@ function ProfileSettingsForm() {
 
     const reader = new FileReader();
     reader.onload = () => {
-      updateCurrentUser({ avatar_url: String(reader.result) });
       setAvatarError("");
+      // Awaited via .catch rather than fire-and-forget: this runs in a
+      // FileReader callback, so a rejected write would otherwise surface only
+      // as an unhandled rejection and the old avatar would stay on screen.
+      updateCurrentUser({ avatar_url: String(reader.result) }).catch((err) =>
+        setAvatarError(err instanceof Error ? err.message : String(err))
+      );
     };
     reader.onerror = () => setAvatarError("Could not read that file. Please try another.");
     reader.readAsDataURL(file);
@@ -54,16 +61,25 @@ function ProfileSettingsForm() {
     e.target.value = "";
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  // Awaited so "Saved" only ever follows a write that actually succeeded.
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateCurrentUser({
-      full_name: fullName.trim(),
-      email: email.trim(),
-      role_title: roleTitle.trim(),
-      timezone,
-    });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setSaveError("");
+    setIsSaving(true);
+    try {
+      await updateCurrentUser({
+        full_name: fullName.trim(),
+        email: email.trim(),
+        role_title: roleTitle.trim(),
+        timezone,
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -158,16 +174,24 @@ function ProfileSettingsForm() {
         </div>
 
         {/* Action button */}
-        <div className="pt-4 border-t border-neutral-100 flex items-center justify-between">
-          <Button type="submit" size="md" variant="primary">
-            {saved ? "Saved Changes!" : "Save Profile"}
-          </Button>
-
-          {saved && (
-            <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1">
-              <Check className="h-4 w-4" /> Changes saved successfully
-            </span>
+        <div className="pt-4 border-t border-neutral-100 space-y-2">
+          {saveError && (
+            <p role="alert" className="text-xs font-medium text-rose-600">
+              {saveError}
+            </p>
           )}
+
+          <div className="flex items-center justify-between">
+            <Button type="submit" size="md" variant="primary" isLoading={isSaving}>
+              {saved ? "Saved Changes!" : "Save Profile"}
+            </Button>
+
+            {saved && (
+              <span className="text-xs font-semibold text-emerald-600 flex items-center gap-1">
+                <Check className="h-4 w-4" /> Changes saved successfully
+              </span>
+            )}
+          </div>
         </div>
       </form>
     </div>

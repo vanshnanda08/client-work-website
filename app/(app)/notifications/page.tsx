@@ -20,6 +20,14 @@ export default function NotificationsPage() {
   const { notifications, markNotificationsAsRead, markNotificationAsRead } = useStore();
   const [filterTab, setFilterTab] = useState<"all" | "unread" | "deliverable">("all");
 
+  /**
+   * Both read actions update state optimistically and the store re-reads the
+   * workspace on failure, rolling the badge back and surfacing the message in
+   * the WorkspaceGate banner. This catch only stops the rejection the store
+   * re-throws from becoming an unhandled promise rejection.
+   */
+  const reportedByStore = () => {};
+
   const unreadCount = notifications.filter((n) => !n.read_at).length;
 
   const filtered = notifications.filter((n) => {
@@ -56,7 +64,7 @@ export default function NotificationsPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={markNotificationsAsRead}
+            onClick={() => markNotificationsAsRead().catch(reportedByStore)}
             leftIcon={<CheckCheck className="h-4 w-4" />}
           >
             Mark all as read
@@ -145,7 +153,7 @@ export default function NotificationsPage() {
                     {n.order_id && (
                       <Link
                         href={`/orders/${n.order_id}`}
-                        onClick={() => markNotificationAsRead(n.id)}
+                        onClick={() => markNotificationAsRead(n.id).catch(reportedByStore)}
                       >
                         <Button size="sm" variant="outline" rightIcon={<ArrowRight className="h-3 w-3" />}>
                           View Order Deliverable
@@ -157,7 +165,7 @@ export default function NotificationsPage() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => markNotificationAsRead(n.id)}
+                        onClick={() => markNotificationAsRead(n.id).catch(reportedByStore)}
                         leftIcon={<CheckCheck className="h-3 w-3" />}
                       >
                         Mark as read
